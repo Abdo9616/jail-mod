@@ -1,9 +1,22 @@
 package com.example.jailmod;
 
+import java.io.BufferedReader;
+import java.io.File;
+import java.io.FileReader;
+import java.io.FileWriter;
+import java.io.IOException;
+import java.util.ArrayList;
+import java.util.EnumSet;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.UUID;
+
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import com.mojang.brigadier.arguments.IntegerArgumentType;
 import com.mojang.brigadier.arguments.StringArgumentType;
+
 import net.fabricmc.api.ModInitializer;
 import net.fabricmc.fabric.api.command.v2.CommandRegistrationCallback;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerLifecycleEvents;
@@ -13,23 +26,19 @@ import net.fabricmc.fabric.api.event.player.UseBlockCallback;
 import net.fabricmc.fabric.api.event.player.UseEntityCallback;
 import net.fabricmc.fabric.api.event.player.UseItemCallback;
 import net.fabricmc.fabric.api.networking.v1.ServerPlayConnectionEvents;
-// import net.fabricmc.fabric.api.permissions.v0.Permissions; // API not found
+import net.minecraft.item.ItemStack;
+import net.minecraft.item.Items;
+import net.minecraft.network.packet.s2c.play.PositionFlag;
 import net.minecraft.registry.RegistryKey;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.command.CommandManager;
+import net.minecraft.server.command.ServerCommandSource;
 import net.minecraft.server.network.ServerPlayerEntity;
 import net.minecraft.server.world.ServerWorld;
 import net.minecraft.text.Text;
 import net.minecraft.util.ActionResult;
 import net.minecraft.util.math.BlockPos;
 import net.minecraft.world.World;
-import net.minecraft.item.ItemStack;
-import net.minecraft.item.Items;
-import net.minecraft.network.packet.s2c.play.PositionFlag;
-// import net.minecraft.util.SpawnPoint; // API not found
-
-import java.io.*;
-import java.util.*;
 
 public class JailMod implements ModInitializer {
 
@@ -45,6 +54,9 @@ public class JailMod implements ModInitializer {
 
     // Configuration class
     public static class Config {
+        public String _comment = "admin_roles: Comma-separated list of roles/tags that grant admin access. Use 'op' for operators.";
+        public String admin_roles = "op"; // Comma-separated list of roles/tags that grant admin access. "op" refers to
+                                          // operator status.
         public boolean use_previous_position = true;
         public Position release_position = new Position(100, 65, 100);
         public Position jail_position = new Position(0, 60, 0);
@@ -131,8 +143,7 @@ public class JailMod implements ModInitializer {
         CommandRegistrationCallback.EVENT.register((dispatcher, registryAccess, environment) -> {
             dispatcher.register(CommandManager.literal("jail")
                     .then(CommandManager.literal("imprison")
-                            .requires(source -> true) // TODO: Fix permissions check (source.hasPermissionLevel(2) logic
-                                                      // broken in 1.21)
+                            .requires(source -> hasAdminPermission(source))
                             .then(CommandManager.argument("player", StringArgumentType.word())
                                     .then(CommandManager.argument("time", IntegerArgumentType.integer(1))
                                             .then(CommandManager.argument("reason", StringArgumentType.greedyString())
@@ -158,7 +169,7 @@ public class JailMod implements ModInitializer {
                                                         return 1;
                                                     })))))
                     .then(CommandManager.literal("reload")
-                            .requires(source -> true) // TODO: Fix permission
+                            .requires(source -> hasAdminPermission(source))
                             .executes(context -> {
                                 loadConfig();
                                 loadLanguage();
@@ -168,7 +179,7 @@ public class JailMod implements ModInitializer {
                                 return 1;
                             }))
                     .then(CommandManager.literal("set")
-                            .requires(source -> true) // TODO: Fix permission
+                            .requires(source -> hasAdminPermission(source))
                             .then(CommandManager.argument("x", IntegerArgumentType.integer())
                                     .then(CommandManager.argument("y", IntegerArgumentType.integer())
                                             .then(CommandManager.argument("z", IntegerArgumentType.integer())
@@ -205,7 +216,7 @@ public class JailMod implements ModInitializer {
                             })));
 
             dispatcher.register(CommandManager.literal("unjail")
-                    .requires(source -> true) // TODO: Fix permission
+                    .requires(source -> hasAdminPermission(source))
                     .then(CommandManager.argument("player", StringArgumentType.word())
                             .executes(context -> {
                                 String playerName = StringArgumentType.getString(context, "player");
@@ -224,6 +235,35 @@ public class JailMod implements ModInitializer {
         });
 
         ServerLifecycleEvents.SERVER_STOPPED.register(server -> saveJailData());
+    }
+
+    private static boolean hasAdminPermission(ServerCommandSource source) {
+        if (source.getEntity() instanceof ServerPlayerEntity player) {
+            // Very stable OP check: compare player name against the list of OP names
+            // This bypasses mapping issues with hasPermissionLevel or isOperator
+            String playerName = player.getName().getString();
+            for (String opName : source.getServer().getPlayerManager().getOpList().getNames()) {
+                if (opName.equalsIgnoreCase(playerName)) {
+                    return true;
+                }
+            }
+
+            // Check for custom admin roles/tags from config
+            String rolesString = config.admin_roles;
+            if (rolesString != null && !rolesString.isEmpty()) {
+                String[] roles = rolesString.split(",");
+                for (String role : roles) {
+                    String trimmedRole = role.trim();
+                    if (!trimmedRole.equalsIgnoreCase("op") && player.getCommandTags().contains(trimmedRole)) {
+                        return true;
+                    }
+                }
+            }
+            return false;
+        }
+
+        // Allow console and non-player sources by default
+        return true;
     }
 
     private void registerInteractionListeners() {
