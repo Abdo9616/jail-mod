@@ -1,7 +1,4 @@
 ## Readme
-[README: Italiano](./README_IT.md)
-
-[README: English](./README.md)
 
 Jail Mod (Fabric)
 =================
