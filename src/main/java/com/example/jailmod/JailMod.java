@@ -30,6 +30,7 @@ import net.minecraft.item.ItemStack;
 import net.minecraft.item.Items;
 import net.minecraft.network.packet.s2c.play.PositionFlag;
 import net.minecraft.registry.RegistryKey;
+import net.minecraft.registry.RegistryKeys;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.command.CommandManager;
 import net.minecraft.server.command.ServerCommandSource;
@@ -54,10 +55,19 @@ public class JailMod implements ModInitializer {
 
     // Configuration class
     public static class Config {
-        public String _comment = "admin_roles: Comma-separated list of roles/tags that grant admin access. Use 'op' for operators.";
+        public String _config_guide = "JailMod Configuration Guide: \n" +
+                "- admin_roles: Comma-separated list of roles or tags that grant /jail access. Use 'op' to include server operators.\n"
+                +
+                "- use_previous_position: If true, released players will be teleported to their original spawn point (if return_to_last_location is false or unavailable).\n"
+                +
+                "- return_to_last_location: If true, released players will be teleported back to the exact spot where they were jailed.\n"
+                +
+                "- jail_position: The coordinates where players are held while in jail.\n" +
+                "- release_position: The fallback coordinates for releasing players if no other location (spawn/last) is used.";
         public String admin_roles = "op"; // Comma-separated list of roles/tags that grant admin access. "op" refers to
                                           // operator status.
-        public boolean use_previous_position = true;
+        public boolean use_previous_position = true; // Use spawn point as fallback
+        public boolean return_to_last_location = true; // Return to the exact spot where jailed
         public Position release_position = new Position(100, 65, 100);
         public Position jail_position = new Position(0, 60, 0);
 
@@ -81,16 +91,31 @@ public class JailMod implements ModInitializer {
         public RegistryKey<World> originalSpawnDimension;
         public boolean hadSpawnPoint;
         public String reason;
-        public int remainingTicks;
+        public int remainingTicks; // Remaining time in ticks (1 second = 20 ticks)
+
+        // Last location data
+        public double lastX;
+        public double lastY;
+        public double lastZ;
+        public float lastYaw;
+        public float lastPitch;
+        public String lastDimension;
 
         public JailData(UUID playerUUID, BlockPos originalSpawnPos, RegistryKey<World> originalSpawnDimension,
-                boolean hadSpawnPoint, String reason, int remainingTicks) {
+                boolean hadSpawnPoint, String reason, int remainingTicks,
+                double lastX, double lastY, double lastZ, float lastYaw, float lastPitch, String lastDimension) {
             this.playerUUID = playerUUID;
             this.originalSpawnPos = originalSpawnPos;
             this.originalSpawnDimension = originalSpawnDimension;
             this.hadSpawnPoint = hadSpawnPoint;
             this.reason = reason;
             this.remainingTicks = remainingTicks;
+            this.lastX = lastX;
+            this.lastY = lastY;
+            this.lastZ = lastZ;
+            this.lastYaw = lastYaw;
+            this.lastPitch = lastPitch;
+            this.lastDimension = lastDimension;
         }
     }
 
@@ -312,15 +337,30 @@ public class JailMod implements ModInitializer {
     }
 
     private void jailPlayer(ServerPlayerEntity player, int timeInSeconds, String reason) {
-        // TODO: Restore spawn point logic when API is clear
-        BlockPos originalSpawnPos = null; // player.getRespawnPos();
-        RegistryKey<World> originalSpawnDimension = World.OVERWORLD; // player.getRespawnDimension();
-        boolean hadSpawnPoint = false;
+        // Save the player's original spawn position
+        BlockPos originalSpawnPos = null;
+        RegistryKey<World> originalSpawnDimension = null;
+        var respawn = player.getRespawn();
+        if (respawn != null && respawn.respawnData() != null) {
+            originalSpawnPos = respawn.respawnData().getPos();
+            originalSpawnDimension = respawn.respawnData().getDimension();
+        }
+        boolean hadSpawnPoint = originalSpawnPos != null;
 
-        int remainingTicks = timeInSeconds * 20;
+        // Calculate remaining time in ticks
+        int remainingTicks = timeInSeconds * 20; // Convert seconds to ticks
 
+        // Capture current position before teleporting
+        double lastX = player.getX();
+        double lastY = player.getY();
+        double lastZ = player.getZ();
+        float lastYaw = player.getYaw();
+        float lastPitch = player.getPitch();
+        String lastDimension = player.getEntityWorld().getRegistryKey().getValue().toString();
+
+        // Save player data
         JailData jailData = new JailData(player.getUuid(), originalSpawnPos, originalSpawnDimension, hadSpawnPoint,
-                reason, remainingTicks);
+                reason, remainingTicks, lastX, lastY, lastZ, lastYaw, lastPitch, lastDimension);
         jailedPlayers.put(player.getUuid(), jailData);
 
         jailPlayer(player, jailData);
@@ -368,7 +408,15 @@ public class JailMod implements ModInitializer {
 
             ServerWorld world = (ServerWorld) player.getEntityWorld();
 
-            if (config.use_previous_position && jailData.originalSpawnPos != null) {
+            // Teleport the player out of jail (release position)
+            if (config.return_to_last_location && jailData.lastDimension != null) {
+                ServerWorld targetWorld = serverInstance.getWorld(
+                        RegistryKey.of(RegistryKeys.WORLD, net.minecraft.util.Identifier.of(jailData.lastDimension)));
+                if (targetWorld == null)
+                    targetWorld = world;
+                player.teleport(targetWorld, jailData.lastX, jailData.lastY, jailData.lastZ,
+                        EnumSet.noneOf(PositionFlag.class), jailData.lastYaw, jailData.lastPitch, false);
+            } else if (config.use_previous_position && jailData.hadSpawnPoint) {
                 player.teleport(world, jailData.originalSpawnPos.getX(), jailData.originalSpawnPos.getY(),
                         jailData.originalSpawnPos.getZ(), EnumSet.noneOf(PositionFlag.class), player.getYaw(),
                         player.getPitch(), false);
@@ -443,8 +491,37 @@ public class JailMod implements ModInitializer {
         // If the config file exists, load it
         if (CONFIG_FILE.exists()) {
             try (FileReader reader = new FileReader(CONFIG_FILE)) {
-                config = GSON.fromJson(reader, Config.class);
-                System.out.println("Configuration loaded: " + CONFIG_FILE.getAbsolutePath());
+                StringBuilder jsonContent = new StringBuilder();
+                int i;
+                while ((i = reader.read()) != -1) {
+                    jsonContent.append((char) i);
+                }
+
+                // Load existing config
+                Config loadedConfig = GSON.fromJson(jsonContent.toString(), Config.class);
+                Config defaultConfig = new Config();
+
+                // Patch missing fields (simple manual merge for now to ensure reliability)
+                if (loadedConfig != null) {
+                    if (loadedConfig._config_guide == null)
+                        loadedConfig._config_guide = defaultConfig._config_guide;
+                    if (loadedConfig.release_position == null)
+                        loadedConfig.release_position = defaultConfig.release_position;
+                    if (loadedConfig.jail_position == null)
+                        loadedConfig.jail_position = defaultConfig.jail_position;
+                    // Note: primitives like booleans default to false if missing, which is tricky.
+                    // To handle primitives correctly without complex reflection, we check if the
+                    // key exists in raw JSON.
+                    if (!jsonContent.toString().contains("return_to_last_location")) {
+                        loadedConfig.return_to_last_location = defaultConfig.return_to_last_location;
+                    }
+                } else {
+                    loadedConfig = defaultConfig;
+                }
+
+                config = loadedConfig;
+                saveConfig(); // Save back to include new fields
+                System.out.println("Configuration loaded and patched: " + CONFIG_FILE.getAbsolutePath());
             } catch (IOException e) {
                 e.printStackTrace();
             }
