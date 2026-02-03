@@ -121,6 +121,7 @@ public class JailMod implements ModInitializer {
         public float savedXpProgress;
         public int savedTotalXp;
         public boolean savedInvulnerable;
+        public int savedFireTicks;
 
         public List<StatusEffectSnapshot> savedEffects;
     }
@@ -541,6 +542,7 @@ public class JailMod implements ModInitializer {
         jailData.savedXpProgress = player.experienceProgress;
         jailData.savedTotalXp = player.totalExperience;
         jailData.savedInvulnerable = player.getAbilities().invulnerable;
+        jailData.savedFireTicks = player.getFireTicks();
         jailData.hasStatSnapshot = true;
         captureEffectSnapshot(player, jailData);
     }
@@ -573,6 +575,10 @@ public class JailMod implements ModInitializer {
         player.experienceProgress = jailData.savedXpProgress;
         player.totalExperience = jailData.savedTotalXp;
 
+        if (player.getFireTicks() != 0) {
+            player.setFireTicks(0);
+        }
+
         applyFrozenEffects(player, jailData);
     }
 
@@ -600,6 +606,12 @@ public class JailMod implements ModInitializer {
 
         player.getAbilities().invulnerable = jailData.savedInvulnerable;
         player.sendAbilitiesUpdate();
+
+        if (jailData.savedFireTicks > 0) {
+            player.setFireTicks(jailData.savedFireTicks);
+        } else if (player.getFireTicks() != 0) {
+            player.setFireTicks(0);
+        }
 
         restoreEffectsAfterJail(player, jailData);
     }
