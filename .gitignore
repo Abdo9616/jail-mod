@@ -4,6 +4,7 @@
 build/
 out/
 classes/
+META-INF/
 
 # eclipse
 
