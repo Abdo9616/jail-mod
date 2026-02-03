@@ -3,7 +3,11 @@
   "package": "com.example.jailmod.mixin",
   "compatibilityLevel": "JAVA_21",
   "mixins": [
-    "ItemEntityMixin"
+    "ItemEntityMixin",
+    "PlayerEntityMixin",
+    "ScreenHandlerMixin",
+    "ServerPlayNetworkHandlerMixin",
+    "ServerPlayerEntityMixin"
   ],
   "injectors": {
     "defaultRequire": 1
