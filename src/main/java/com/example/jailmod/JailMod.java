@@ -48,8 +48,10 @@ import net.minecraft.server.world.ServerWorld;
 import net.minecraft.text.Text;
 import net.minecraft.util.ActionResult;
 import net.minecraft.util.Identifier;
+import net.minecraft.util.Formatting;
 import net.minecraft.util.math.BlockPos;
 import net.minecraft.world.World;
+import com.mojang.brigadier.suggestion.SuggestionProvider;
 
 public class JailMod implements ModInitializer {
 
@@ -63,6 +65,20 @@ public class JailMod implements ModInitializer {
     private static Map<UUID, JailData> jailedPlayers = new HashMap<>();
 
     private static MinecraftServer serverInstance;
+    private static final SuggestionProvider<ServerCommandSource> JAILED_PLAYERS_SUGGESTIONS = (context, builder) -> {
+        MinecraftServer server = context.getSource().getServer();
+        if (server == null) {
+            return builder.buildFuture();
+        }
+
+        for (UUID uuid : jailedPlayers.keySet()) {
+            ServerPlayerEntity player = server.getPlayerManager().getPlayer(uuid);
+            if (player != null) {
+                builder.suggest(player.getName().getString());
+            }
+        }
+        return builder.buildFuture();
+    };
     private static ConfigFormat configFormat = ConfigFormat.JSON;
 
     private enum ConfigFormat {
@@ -290,9 +306,16 @@ public class JailMod implements ModInitializer {
             dispatcher.register(CommandManager.literal("unjail")
                     .requires(source -> hasAdminPermission(source))
                     .then(CommandManager.argument("player", EntityArgumentType.player())
+                            .suggests(JAILED_PLAYERS_SUGGESTIONS)
                             .executes(context -> {
                                 ServerPlayerEntity player = EntityArgumentType.getPlayer(context, "player");
                                 if (player != null) {
+                                    if (!isPlayerInJail(player)) {
+                                        context.getSource().sendError(Text.literal("Player "
+                                                + player.getName().getString() + " is not jailed.")
+                                                .formatted(Formatting.RED));
+                                        return 0;
+                                    }
                                     unjailPlayer(player, true);
                                     context.getSource().sendFeedback(
                                             () -> Text.of("Player " + player.getName().getString()
