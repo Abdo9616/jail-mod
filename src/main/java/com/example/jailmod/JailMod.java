@@ -30,6 +30,7 @@ import net.fabricmc.fabric.api.event.player.UseBlockCallback;
 import net.fabricmc.fabric.api.event.player.UseEntityCallback;
 import net.fabricmc.fabric.api.event.player.UseItemCallback;
 import net.fabricmc.fabric.api.networking.v1.ServerPlayConnectionEvents;
+import net.minecraft.command.argument.EntityArgumentType;
 import net.minecraft.entity.effect.StatusEffect;
 import net.minecraft.entity.effect.StatusEffectInstance;
 import net.minecraft.item.ItemStack;
@@ -54,6 +55,7 @@ public class JailMod implements ModInitializer {
 
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
     private static final File CONFIG_FILE = new File("config/jailmod/config.json");
+    private static final File TOML_CONFIG_FILE = new File("config/jailmod/config.toml");
     private static final File LANGUAGE_FILE = new File("config/jailmod/language.txt");
     private static final File JAIL_DATA_FILE = new File("config/jailmod/jail_data.json");
     private static Config config;
@@ -61,6 +63,12 @@ public class JailMod implements ModInitializer {
     private static Map<UUID, JailData> jailedPlayers = new HashMap<>();
 
     private static MinecraftServer serverInstance;
+    private static ConfigFormat configFormat = ConfigFormat.JSON;
+
+    private enum ConfigFormat {
+        JSON,
+        TOML
+    }
 
     // Configuration class
     public static class Config {
@@ -198,17 +206,15 @@ public class JailMod implements ModInitializer {
             dispatcher.register(CommandManager.literal("jail")
                     .then(CommandManager.literal("imprison")
                             .requires(source -> hasAdminPermission(source))
-                            .then(CommandManager.argument("player", StringArgumentType.word())
+                            .then(CommandManager.argument("player", EntityArgumentType.player())
                                     .then(CommandManager.argument("time", IntegerArgumentType.integer(1))
                                             .then(CommandManager.argument("reason", StringArgumentType.greedyString())
                                                     .executes(context -> {
-                                                        String playerName = StringArgumentType.getString(context,
-                                                                "player");
+                                                        ServerPlayerEntity player = EntityArgumentType
+                                                                .getPlayer(context, "player");
                                                         int timeInSeconds = IntegerArgumentType.getInteger(context,
                                                                 "time");
                                                         String reason = StringArgumentType.getString(context, "reason");
-                                                        ServerPlayerEntity player = context.getSource().getServer()
-                                                                .getPlayerManager().getPlayer(playerName);
 
                                                         if (player != null) {
                                                             JailUpdateResult result = jailPlayer(player, timeInSeconds,
@@ -216,13 +222,15 @@ public class JailMod implements ModInitializer {
                                                             if (result.wasAlreadyJailed) {
                                                                 context.getSource().sendFeedback(
                                                                         () -> Text.of("Added " + result.addedSeconds
-                                                                                + " seconds to " + playerName
+                                                                                + " seconds to " + player.getName()
+                                                                                        .getString()
                                                                                 + ". Remaining: "
                                                                                 + result.totalSeconds + " seconds."),
                                                                         true);
                                                             } else {
                                                                 context.getSource().sendFeedback(
-                                                                        () -> Text.of("Player " + playerName
+                                                                        () -> Text.of("Player "
+                                                                                + player.getName().getString()
                                                                                 + " jailed for " + timeInSeconds
                                                                                 + " seconds."),
                                                                         true);
@@ -281,15 +289,14 @@ public class JailMod implements ModInitializer {
 
             dispatcher.register(CommandManager.literal("unjail")
                     .requires(source -> hasAdminPermission(source))
-                    .then(CommandManager.argument("player", StringArgumentType.word())
+                    .then(CommandManager.argument("player", EntityArgumentType.player())
                             .executes(context -> {
-                                String playerName = StringArgumentType.getString(context, "player");
-                                ServerPlayerEntity player = context.getSource().getServer().getPlayerManager()
-                                        .getPlayer(playerName);
+                                ServerPlayerEntity player = EntityArgumentType.getPlayer(context, "player");
                                 if (player != null) {
                                     unjailPlayer(player, true);
                                     context.getSource().sendFeedback(
-                                            () -> Text.of("Player " + playerName + " has been released from jail."),
+                                            () -> Text.of("Player " + player.getName().getString()
+                                                    + " has been released from jail."),
                                             true);
                                 } else {
                                     context.getSource().sendError(Text.of("Player not found!"));
@@ -762,6 +769,19 @@ public class JailMod implements ModInitializer {
             CONFIG_FILE.getParentFile().mkdirs();
         }
 
+        if (TOML_CONFIG_FILE.exists()) {
+            configFormat = ConfigFormat.TOML;
+            config = loadTomlConfig(TOML_CONFIG_FILE);
+            if (config == null) {
+                config = new Config();
+            }
+            saveConfig(); // Save back to include new fields
+            System.out.println("Configuration loaded and patched: " + TOML_CONFIG_FILE.getAbsolutePath());
+            return;
+        }
+
+        configFormat = ConfigFormat.JSON;
+
         // If the config file exists, load it
         if (CONFIG_FILE.exists()) {
             try (FileReader reader = new FileReader(CONFIG_FILE)) {
@@ -886,7 +906,239 @@ public class JailMod implements ModInitializer {
         }
     }
 
+    private Config loadTomlConfig(File tomlFile) {
+        Config loadedConfig = new Config();
+        try (BufferedReader reader = new BufferedReader(new FileReader(tomlFile))) {
+            String line;
+            String currentSection = "";
+            boolean inMultiline = false;
+            StringBuilder multilineValue = new StringBuilder();
+            String multilineKey = null;
+            String multilineSection = "";
+
+            while ((line = reader.readLine()) != null) {
+                String trimmed = line.trim();
+                if (!inMultiline) {
+                    if (trimmed.isEmpty() || trimmed.startsWith("#") || trimmed.startsWith("//")) {
+                        continue;
+                    }
+
+                    if (trimmed.startsWith("[") && trimmed.endsWith("]")) {
+                        currentSection = trimmed.substring(1, trimmed.length() - 1).trim();
+                        continue;
+                    }
+
+                    int equalsIndex = trimmed.indexOf('=');
+                    if (equalsIndex < 0) {
+                        continue;
+                    }
+
+                    String key = trimmed.substring(0, equalsIndex).trim();
+                    String rawValue = trimmed.substring(equalsIndex + 1).trim();
+
+                    if (rawValue.startsWith("\"\"\"")) {
+                        String remainder = rawValue.substring(3);
+                        int endIndex = remainder.indexOf("\"\"\"");
+                        if (endIndex >= 0) {
+                            String value = remainder.substring(0, endIndex);
+                            applyTomlValue(loadedConfig, currentSection, key, value, true);
+                        } else {
+                            inMultiline = true;
+                            multilineKey = key;
+                            multilineSection = currentSection;
+                            multilineValue.setLength(0);
+                            multilineValue.append(remainder);
+                        }
+                        continue;
+                    }
+
+                    rawValue = stripTomlComment(rawValue);
+                    applyTomlValue(loadedConfig, currentSection, key, rawValue, false);
+                } else {
+                    int endIndex = trimmed.indexOf("\"\"\"");
+                    if (endIndex >= 0) {
+                        multilineValue.append("\n").append(trimmed, 0, endIndex);
+                        applyTomlValue(loadedConfig, multilineSection, multilineKey,
+                                multilineValue.toString(), true);
+                        inMultiline = false;
+                        multilineKey = null;
+                        multilineSection = "";
+                        multilineValue.setLength(0);
+                    } else {
+                        multilineValue.append("\n").append(trimmed);
+                    }
+                }
+            }
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+        return loadedConfig;
+    }
+
+    private void applyTomlValue(Config loadedConfig, String section, String key, String rawValue,
+            boolean isMultiline) {
+        if (loadedConfig == null || key == null) {
+            return;
+        }
+
+        String effectiveSection = section == null ? "" : section.trim();
+        String effectiveKey = key.trim();
+        if (effectiveSection.isEmpty() && effectiveKey.contains(".")) {
+            int dotIndex = effectiveKey.indexOf('.');
+            effectiveSection = effectiveKey.substring(0, dotIndex).trim();
+            effectiveKey = effectiveKey.substring(dotIndex + 1).trim();
+        }
+
+        if (effectiveSection.isEmpty()) {
+            switch (effectiveKey) {
+                case "_config_guide" -> loadedConfig._config_guide = isMultiline
+                        ? rawValue
+                        : parseTomlString(rawValue);
+                case "admin_roles" -> loadedConfig.admin_roles = parseTomlString(rawValue);
+                case "use_previous_position" -> loadedConfig.use_previous_position = parseTomlBoolean(rawValue,
+                        loadedConfig.use_previous_position);
+                case "return_to_last_location" -> loadedConfig.return_to_last_location = parseTomlBoolean(rawValue,
+                        loadedConfig.return_to_last_location);
+                default -> {
+                }
+            }
+            return;
+        }
+
+        switch (effectiveSection) {
+            case "release_position" -> applyTomlPosition(loadedConfig.release_position, effectiveKey, rawValue);
+            case "jail_position" -> applyTomlPosition(loadedConfig.jail_position, effectiveKey, rawValue);
+            default -> {
+            }
+        }
+    }
+
+    private void applyTomlPosition(Config.Position position, String key, String rawValue) {
+        if (position == null || key == null) {
+            return;
+        }
+        int value = parseTomlInt(rawValue, 0);
+        switch (key) {
+            case "x" -> position.x = value;
+            case "y" -> position.y = value;
+            case "z" -> position.z = value;
+            default -> {
+            }
+        }
+    }
+
+    private String stripTomlComment(String rawValue) {
+        boolean inQuotes = false;
+        char quoteChar = 0;
+        for (int i = 0; i < rawValue.length(); i++) {
+            char c = rawValue.charAt(i);
+            if (inQuotes) {
+                if (c == '\\') {
+                    i++;
+                } else if (c == quoteChar) {
+                    inQuotes = false;
+                }
+            } else {
+                if (c == '"' || c == '\'') {
+                    inQuotes = true;
+                    quoteChar = c;
+                } else if (c == '#') {
+                    return rawValue.substring(0, i).trim();
+                }
+            }
+        }
+        return rawValue.trim();
+    }
+
+    private String parseTomlString(String rawValue) {
+        String trimmed = rawValue == null ? "" : rawValue.trim();
+        if (trimmed.length() >= 2) {
+            char first = trimmed.charAt(0);
+            char last = trimmed.charAt(trimmed.length() - 1);
+            if ((first == '"' && last == '"') || (first == '\'' && last == '\'')) {
+                trimmed = trimmed.substring(1, trimmed.length() - 1);
+            }
+        }
+        trimmed = trimmed.replace("\\n", "\n")
+                .replace("\\t", "\t")
+                .replace("\\\"", "\"")
+                .replace("\\\\", "\\");
+        return trimmed;
+    }
+
+    private boolean parseTomlBoolean(String rawValue, boolean fallback) {
+        if (rawValue == null) {
+            return fallback;
+        }
+        String trimmed = rawValue.trim();
+        if ("true".equalsIgnoreCase(trimmed)) {
+            return true;
+        }
+        if ("false".equalsIgnoreCase(trimmed)) {
+            return false;
+        }
+        return fallback;
+    }
+
+    private int parseTomlInt(String rawValue, int fallback) {
+        if (rawValue == null) {
+            return fallback;
+        }
+        String cleaned = rawValue.trim().replace("_", "");
+        try {
+            return Integer.parseInt(cleaned);
+        } catch (NumberFormatException e) {
+            return fallback;
+        }
+    }
+
+    private String escapeTomlString(String value) {
+        if (value == null) {
+            return "";
+        }
+        return value.replace("\\", "\\\\")
+                .replace("\"", "\\\"")
+                .replace("\n", "\\n")
+                .replace("\t", "\\t");
+    }
+
+    private void saveTomlConfig() {
+        Config defaultConfig = new Config();
+        if (config.release_position == null) {
+            config.release_position = defaultConfig.release_position;
+        }
+        if (config.jail_position == null) {
+            config.jail_position = defaultConfig.jail_position;
+        }
+
+        try (FileWriter writer = new FileWriter(TOML_CONFIG_FILE)) {
+            writer.write("_config_guide = \"" + escapeTomlString(config._config_guide) + "\"\n");
+            writer.write("admin_roles = \"" + escapeTomlString(config.admin_roles) + "\"\n");
+            writer.write("use_previous_position = " + config.use_previous_position + "\n");
+            writer.write("return_to_last_location = " + config.return_to_last_location + "\n\n");
+
+            writer.write("[release_position]\n");
+            writer.write("x = " + config.release_position.x + "\n");
+            writer.write("y = " + config.release_position.y + "\n");
+            writer.write("z = " + config.release_position.z + "\n\n");
+
+            writer.write("[jail_position]\n");
+            writer.write("x = " + config.jail_position.x + "\n");
+            writer.write("y = " + config.jail_position.y + "\n");
+            writer.write("z = " + config.jail_position.z + "\n");
+
+            System.out.println("Configuration saved: " + TOML_CONFIG_FILE.getAbsolutePath());
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+    }
+
     private void saveConfig() {
+        if (configFormat == ConfigFormat.TOML) {
+            saveTomlConfig();
+            return;
+        }
+
         try (FileWriter writer = new FileWriter(CONFIG_FILE)) {
             GSON.toJson(config, writer);
             System.out.println("Configuration saved: " + CONFIG_FILE.getAbsolutePath());
