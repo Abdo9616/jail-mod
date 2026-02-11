@@ -5,12 +5,6 @@ import java.io.File;
 import java.io.FileReader;
 import java.io.FileWriter;
 import java.io.IOException;
-import java.io.OutputStream;
-import java.net.HttpURLConnection;
-import java.net.URL;
-import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
-import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.EnumSet;
 import java.util.HashMap;
@@ -19,10 +13,10 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
-import java.util.concurrent.CompletableFuture;
 
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
+import com.google.gson.annotations.SerializedName;
 import com.mojang.brigadier.arguments.IntegerArgumentType;
 import com.mojang.brigadier.arguments.StringArgumentType;
 import com.mojang.brigadier.suggestion.SuggestionProvider;
@@ -38,7 +32,6 @@ import net.fabricmc.fabric.api.event.player.UseBlockCallback;
 import net.fabricmc.fabric.api.event.player.UseEntityCallback;
 import net.fabricmc.fabric.api.event.player.UseItemCallback;
 import net.fabricmc.fabric.api.networking.v1.ServerPlayConnectionEvents;
-import net.fabricmc.loader.api.FabricLoader;
 import net.minecraft.command.argument.EntityArgumentType;
 import net.minecraft.entity.effect.StatusEffect;
 import net.minecraft.entity.effect.StatusEffectInstance;
@@ -68,14 +61,12 @@ public class JailMod implements ModInitializer {
     private static final File TOML_CONFIG_FILE = new File("config/jailmod/config.toml");
     private static final File LANGUAGE_FILE = new File("config/jailmod/language.txt");
     private static final File JAIL_DATA_FILE = new File("config/jailmod/jail_data.json");
-    private static final int DISCORD_COLOR_RED = 0xED4245;   // BanHammer red
-    private static final int DISCORD_COLOR_GREEN = 0x57F287; // BanHammer green
     private static Config config;
     private static Map<String, String> languageStrings = new HashMap<>();
     private static Map<UUID, JailData> jailedPlayers = new HashMap<>();
 
     private static MinecraftServer serverInstance;
-    private static String cachedWebhookUrl = null;
+    private static DiscordNotifier discordNotifier;
     private static final SuggestionProvider<ServerCommandSource> JAILED_PLAYERS_SUGGESTIONS = (context, builder) -> {
         MinecraftServer server = context.getSource().getServer();
         if (server == null) {
@@ -108,7 +99,8 @@ public class JailMod implements ModInitializer {
                 +
                 "- jail_position: The coordinates where players are held while in jail.\n" +
                 "- release_position: The fallback coordinates for releasing players if no other location (spawn/last) is used.\n" +
-                "- discord_webhook_url: Optional Discord webhook. If empty and BanHammer is installed, JailMod will reuse BanHammer's webhook.";
+                "- discord_webhook_url: Optional Discord webhook. If empty and BanHammer is installed, JailMod will reuse BanHammer's webhook.\n" +
+                "- use_banhammer_webhook: If true and discord_webhook_url is empty, JailMod may reuse BanHammer's webhook.";
         public String admin_roles = "op"; // Comma-separated list of roles/tags that grant admin access. "op" refers to
                                           // operator status.
         public boolean use_previous_position = true; // Use spawn point as fallback
@@ -116,6 +108,9 @@ public class JailMod implements ModInitializer {
         public Position release_position = new Position(100, 65, 100);
         public Position jail_position = new Position(0, 60, 0);
         public String discord_webhook_url = "";
+        // Keep config key as use_banhammer_webhook while also accepting old sendJailMessage.
+        @SerializedName(value = "use_banhammer_webhook", alternate = { "sendJailMessage" })
+        public boolean useBanhammerWebhook = true;
 
         public static class Position {
             public int x;
@@ -196,6 +191,8 @@ public class JailMod implements ModInitializer {
         loadConfig();
         loadLanguage();
         loadJailData();
+        discordNotifier = new DiscordNotifier();
+        discordNotifier.reload();
 
         ServerTickEvents.END_SERVER_TICK.register(server -> {
             List<UUID> playersToRelease = new ArrayList<>();
@@ -273,10 +270,11 @@ public class JailMod implements ModInitializer {
                             .requires(source -> hasAdminPermission(source))
                             .executes(context -> {
                                 loadConfig();
-                                cachedWebhookUrl = null; // force refresh
                                 loadLanguage();
+                                discordNotifier.reload();
                                 context.getSource().sendFeedback(
-                                        () -> Text.of("Configuration and language strings successfully reloaded!"),
+                                        () -> Text.of(
+                                                "Configuration, language strings, and Discord message templates successfully reloaded!"),
                                         true);
                                 return 1;
                             }))
@@ -451,8 +449,8 @@ public class JailMod implements ModInitializer {
             saveJailData();
 
             if (notifyWebhook) {
-                sendDiscordJailNotification("has been jailed!", player.getName().getString(), reason,
-                        Math.max(0, existingData.remainingTicks / 20), actorName, DISCORD_COLOR_RED);
+                discordNotifier.sendJailMessage(config, player.getName().getString(), reason,
+                        Math.max(0, existingData.remainingTicks / 20), actorName);
             }
 
             return new JailUpdateResult(true, timeInSeconds, Math.max(0, existingData.remainingTicks / 20));
@@ -499,8 +497,8 @@ public class JailMod implements ModInitializer {
         saveJailData();
 
         if (notifyWebhook) {
-            sendDiscordJailNotification("has been jailed!", player.getName().getString(), reason,
-                    Math.max(0, jailData.remainingTicks / 20), actorName, DISCORD_COLOR_RED);
+            discordNotifier.sendJailMessage(config, player.getName().getString(), reason,
+                    Math.max(0, jailData.remainingTicks / 20), actorName);
         }
 
         return new JailUpdateResult(false, 0, Math.max(0, jailData.remainingTicks / 20));
@@ -576,8 +574,8 @@ public class JailMod implements ModInitializer {
                 String broadcastMessage = languageStrings.get("unjail_broadcast_manual")
                         .replace("{player}", player.getName().getString());
                 serverInstance.getPlayerManager().broadcast(Text.of(broadcastMessage), false);
-                sendDiscordJailNotification("has been unjailed!", player.getName().getString(), jailData.reason,
-                        0, actorName, DISCORD_COLOR_RED);
+                discordNotifier.sendUnjailMessage(config, player.getName().getString(), jailData.reason, actorName,
+                        true);
             } else {
                 String messageToPlayer = languageStrings.get("unjail_player_auto");
                 player.sendMessage(Text.of(messageToPlayer), false);
@@ -585,8 +583,8 @@ public class JailMod implements ModInitializer {
                 String broadcastMessage = languageStrings.get("unjail_broadcast_auto")
                         .replace("{player}", player.getName().getString());
                 serverInstance.getPlayerManager().broadcast(Text.of(broadcastMessage), false);
-                sendDiscordJailNotification("has been unjailed!", player.getName().getString(), jailData.reason,
-                        0, actorName, DISCORD_COLOR_GREEN);
+                discordNotifier.sendUnjailMessage(config, player.getName().getString(), jailData.reason, actorName,
+                        false);
             }
 
             saveJailData();
@@ -867,6 +865,15 @@ public class JailMod implements ModInitializer {
                     if (!jsonContent.toString().contains("discord_webhook_url")) {
                         loadedConfig.discord_webhook_url = defaultConfig.discord_webhook_url;
                     }
+                    if (jsonContent.toString().contains("use_banhammer_webhook")) {
+                        loadedConfig.useBanhammerWebhook = extractBooleanFromJson(jsonContent.toString(),
+                                "use_banhammer_webhook", defaultConfig.useBanhammerWebhook);
+                    } else if (jsonContent.toString().contains("sendJailMessage")) {
+                        loadedConfig.useBanhammerWebhook = extractBooleanFromJson(jsonContent.toString(),
+                                "sendJailMessage", defaultConfig.useBanhammerWebhook);
+                    } else {
+                        loadedConfig.useBanhammerWebhook = defaultConfig.useBanhammerWebhook;
+                    }
                 } else {
                     loadedConfig = defaultConfig;
                 }
@@ -1058,6 +1065,10 @@ public class JailMod implements ModInitializer {
                 case "return_to_last_location" -> loadedConfig.return_to_last_location = parseTomlBoolean(rawValue,
                         loadedConfig.return_to_last_location);
                 case "discord_webhook_url" -> loadedConfig.discord_webhook_url = parseTomlString(rawValue);
+                case "sendJailMessage" -> loadedConfig.useBanhammerWebhook = parseTomlBoolean(rawValue,
+                        loadedConfig.useBanhammerWebhook);
+                case "use_banhammer_webhook" -> loadedConfig.useBanhammerWebhook = parseTomlBoolean(rawValue,
+                        loadedConfig.useBanhammerWebhook);
                 default -> {
                 }
             }
@@ -1176,6 +1187,7 @@ public class JailMod implements ModInitializer {
             writer.write("use_previous_position = " + config.use_previous_position + "\n");
             writer.write("return_to_last_location = " + config.return_to_last_location + "\n\n");
             writer.write("discord_webhook_url = \"" + escapeTomlString(config.discord_webhook_url) + "\"\n\n");
+            writer.write("use_banhammer_webhook = " + config.useBanhammerWebhook + "\n\n");
 
             writer.write("[release_position]\n");
             writer.write("x = " + config.release_position.x + "\n");
@@ -1207,111 +1219,20 @@ public class JailMod implements ModInitializer {
         }
     }
 
-    private String resolveActiveWebhookUrl() {
-        if (cachedWebhookUrl != null) {
-            return cachedWebhookUrl;
-        }
-        if (config.discord_webhook_url != null && !config.discord_webhook_url.isBlank()) {
-            cachedWebhookUrl = config.discord_webhook_url.trim();
-            return cachedWebhookUrl;
-        }
-        cachedWebhookUrl = readBanHammerWebhookUrl();
-        return cachedWebhookUrl;
-    }
-
-    private String readBanHammerWebhookUrl() {
+    private boolean extractBooleanFromJson(String json, String key, boolean fallback) {
         try {
-            if (!FabricLoader.getInstance().isModLoaded("banhammer")) {
-                return "";
+            Map<?, ?> root = GSON.fromJson(json, Map.class);
+            if (root == null) {
+                return fallback;
             }
-            java.nio.file.Path path = Paths.get("config/banhammer/config.json");
-            if (!Files.exists(path)) {
-                return "";
+            Object value = root.get(key);
+            if (value instanceof Boolean bool) {
+                return bool;
             }
-            String json = Files.readString(path);
-            Map<?, ?> parsed = GSON.fromJson(json, Map.class);
-            if (parsed != null) {
-                // Prefer array field used by BanHammer
-                Object urls = parsed.get("discordWebhookUrls");
-                if (urls instanceof List<?> list && !list.isEmpty()) {
-                    Object first = list.get(0);
-                    if (first instanceof String s && !s.isBlank()) {
-                        return s.trim();
-                    }
-                }
-                // Legacy single value fallback
-                Object url = parsed.get("discordWebhookUrl");
-                if (url instanceof String s && !s.isBlank()) {
-                    return s.trim();
-                }
-            }
+            return fallback;
         } catch (Exception e) {
-            System.err.println("JailMod: Failed to read BanHammer webhook: " + e.getMessage());
-        }
-        return "";
-    }
-
-    private void sendDiscordJailNotification(String title, String targetPlayer, String reason, int durationSeconds,
-            String actor, int color) {
-        String webhookUrl = resolveActiveWebhookUrl();
-        if (webhookUrl == null || webhookUrl.isBlank()) {
-            return;
-        }
-
-        Map<String, Object> embed = new HashMap<>();
-        embed.put("color", color);
-
-        StringBuilder description = new StringBuilder();
-        description.append(targetPlayer).append(" ").append(title).append("\n\n");
-        if (reason != null && !reason.isBlank()) {
-            String reasonLabel = title.contains("unjailed") ? "**Original reason:**" : "**Reason:**";
-            description.append(reasonLabel).append(" ").append(reason).append("\n");
-        }
-        if (durationSeconds > 0) {
-            description.append("**Expires in:** ").append(durationSeconds).append(" second(s)\n");
-        }
-        if (actor != null && !actor.isBlank()) {
-            description.append("**By:** ").append(actor);
-        }
-        embed.put("description", description.toString().trim());
-
-        Map<String, Object> payload = new HashMap<>();
-        List<Map<String, Object>> embeds = new ArrayList<>();
-        embeds.add(embed);
-        payload.put("embeds", embeds);
-
-        final String jsonBody = GSON.toJson(payload);
-        CompletableFuture.runAsync(() -> postWebhook(webhookUrl, jsonBody));
-    }
-
-    private Map<String, Object> discordField(String name, String value, boolean inline) {
-        Map<String, Object> field = new HashMap<>();
-        field.put("name", name);
-        field.put("value", value);
-        field.put("inline", inline);
-        return field;
-    }
-
-    private void postWebhook(String webhookUrl, String body) {
-        HttpURLConnection connection = null;
-        try {
-            URL url = new URL(webhookUrl);
-            connection = (HttpURLConnection) url.openConnection();
-            connection.setRequestMethod("POST");
-            connection.setRequestProperty("Content-Type", "application/json");
-            connection.setDoOutput(true);
-            byte[] payload = body.getBytes(StandardCharsets.UTF_8);
-            connection.setRequestProperty("Content-Length", String.valueOf(payload.length));
-            try (OutputStream os = connection.getOutputStream()) {
-                os.write(payload);
-            }
-            connection.getResponseCode(); // trigger send
-        } catch (Exception e) {
-            System.err.println("JailMod: Failed to post Discord webhook: " + e.getMessage());
-        } finally {
-            if (connection != null) {
-                connection.disconnect();
-            }
+            return fallback;
         }
     }
+
 }
