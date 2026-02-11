@@ -11,7 +11,6 @@ import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Paths;
-import java.time.Instant;
 import java.util.ArrayList;
 import java.util.EnumSet;
 import java.util.HashMap;
@@ -26,6 +25,7 @@ import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import com.mojang.brigadier.arguments.IntegerArgumentType;
 import com.mojang.brigadier.arguments.StringArgumentType;
+import com.mojang.brigadier.suggestion.SuggestionProvider;
 
 import net.fabricmc.api.ModInitializer;
 import net.fabricmc.fabric.api.command.v2.CommandRegistrationCallback;
@@ -56,11 +56,10 @@ import net.minecraft.server.network.ServerPlayerEntity;
 import net.minecraft.server.world.ServerWorld;
 import net.minecraft.text.Text;
 import net.minecraft.util.ActionResult;
-import net.minecraft.util.Identifier;
 import net.minecraft.util.Formatting;
+import net.minecraft.util.Identifier;
 import net.minecraft.util.math.BlockPos;
 import net.minecraft.world.World;
-import com.mojang.brigadier.suggestion.SuggestionProvider;
 
 public class JailMod implements ModInitializer {
 
@@ -69,11 +68,14 @@ public class JailMod implements ModInitializer {
     private static final File TOML_CONFIG_FILE = new File("config/jailmod/config.toml");
     private static final File LANGUAGE_FILE = new File("config/jailmod/language.txt");
     private static final File JAIL_DATA_FILE = new File("config/jailmod/jail_data.json");
+    private static final int DISCORD_COLOR_RED = 0xED4245;   // BanHammer red
+    private static final int DISCORD_COLOR_GREEN = 0x57F287; // BanHammer green
     private static Config config;
     private static Map<String, String> languageStrings = new HashMap<>();
     private static Map<UUID, JailData> jailedPlayers = new HashMap<>();
 
     private static MinecraftServer serverInstance;
+    private static String cachedWebhookUrl = null;
     private static final SuggestionProvider<ServerCommandSource> JAILED_PLAYERS_SUGGESTIONS = (context, builder) -> {
         MinecraftServer server = context.getSource().getServer();
         if (server == null) {
@@ -271,6 +273,7 @@ public class JailMod implements ModInitializer {
                             .requires(source -> hasAdminPermission(source))
                             .executes(context -> {
                                 loadConfig();
+                                cachedWebhookUrl = null; // force refresh
                                 loadLanguage();
                                 context.getSource().sendFeedback(
                                         () -> Text.of("Configuration and language strings successfully reloaded!"),
@@ -448,8 +451,8 @@ public class JailMod implements ModInitializer {
             saveJailData();
 
             if (notifyWebhook) {
-                sendDiscordJailNotification("Jail Extended", player.getName().getString(), reason,
-                        Math.max(0, existingData.remainingTicks / 20), actorName, 0xFF0000);
+                sendDiscordJailNotification("has been jailed!", player.getName().getString(), reason,
+                        Math.max(0, existingData.remainingTicks / 20), actorName, DISCORD_COLOR_RED);
             }
 
             return new JailUpdateResult(true, timeInSeconds, Math.max(0, existingData.remainingTicks / 20));
@@ -496,8 +499,8 @@ public class JailMod implements ModInitializer {
         saveJailData();
 
         if (notifyWebhook) {
-            sendDiscordJailNotification("Player Jailed", player.getName().getString(), reason,
-                    Math.max(0, jailData.remainingTicks / 20), actorName, 0xFF0000);
+            sendDiscordJailNotification("has been jailed!", player.getName().getString(), reason,
+                    Math.max(0, jailData.remainingTicks / 20), actorName, DISCORD_COLOR_RED);
         }
 
         return new JailUpdateResult(false, 0, Math.max(0, jailData.remainingTicks / 20));
@@ -573,8 +576,8 @@ public class JailMod implements ModInitializer {
                 String broadcastMessage = languageStrings.get("unjail_broadcast_manual")
                         .replace("{player}", player.getName().getString());
                 serverInstance.getPlayerManager().broadcast(Text.of(broadcastMessage), false);
-                sendDiscordJailNotification("Player Unjailed", player.getName().getString(), jailData.reason,
-                        0, actorName, 0x00FF00);
+                sendDiscordJailNotification("has been unjailed!", player.getName().getString(), jailData.reason,
+                        0, actorName, DISCORD_COLOR_RED);
             } else {
                 String messageToPlayer = languageStrings.get("unjail_player_auto");
                 player.sendMessage(Text.of(messageToPlayer), false);
@@ -582,8 +585,8 @@ public class JailMod implements ModInitializer {
                 String broadcastMessage = languageStrings.get("unjail_broadcast_auto")
                         .replace("{player}", player.getName().getString());
                 serverInstance.getPlayerManager().broadcast(Text.of(broadcastMessage), false);
-                sendDiscordJailNotification("Player Unjailed (Auto)", player.getName().getString(), jailData.reason,
-                        0, actorName, 0x00FF00);
+                sendDiscordJailNotification("has been unjailed!", player.getName().getString(), jailData.reason,
+                        0, actorName, DISCORD_COLOR_GREEN);
             }
 
             saveJailData();
@@ -1205,10 +1208,15 @@ public class JailMod implements ModInitializer {
     }
 
     private String resolveActiveWebhookUrl() {
-        if (config.discord_webhook_url != null && !config.discord_webhook_url.isBlank()) {
-            return config.discord_webhook_url.trim();
+        if (cachedWebhookUrl != null) {
+            return cachedWebhookUrl;
         }
-        return readBanHammerWebhookUrl();
+        if (config.discord_webhook_url != null && !config.discord_webhook_url.isBlank()) {
+            cachedWebhookUrl = config.discord_webhook_url.trim();
+            return cachedWebhookUrl;
+        }
+        cachedWebhookUrl = readBanHammerWebhookUrl();
+        return cachedWebhookUrl;
     }
 
     private String readBanHammerWebhookUrl() {
@@ -1223,6 +1231,15 @@ public class JailMod implements ModInitializer {
             String json = Files.readString(path);
             Map<?, ?> parsed = GSON.fromJson(json, Map.class);
             if (parsed != null) {
+                // Prefer array field used by BanHammer
+                Object urls = parsed.get("discordWebhookUrls");
+                if (urls instanceof List<?> list && !list.isEmpty()) {
+                    Object first = list.get(0);
+                    if (first instanceof String s && !s.isBlank()) {
+                        return s.trim();
+                    }
+                }
+                // Legacy single value fallback
                 Object url = parsed.get("discordWebhookUrl");
                 if (url instanceof String s && !s.isBlank()) {
                     return s.trim();
@@ -1242,22 +1259,21 @@ public class JailMod implements ModInitializer {
         }
 
         Map<String, Object> embed = new HashMap<>();
-        embed.put("title", title);
         embed.put("color", color);
-        embed.put("timestamp", Instant.now().toString());
 
-        List<Map<String, Object>> fields = new ArrayList<>();
-        fields.add(discordField("Player", targetPlayer, true));
-        if (actor != null && !actor.isBlank()) {
-            fields.add(discordField("Actor", actor, true));
+        StringBuilder description = new StringBuilder();
+        description.append(targetPlayer).append(" ").append(title).append("\n\n");
+        if (reason != null && !reason.isBlank()) {
+            String reasonLabel = title.contains("unjailed") ? "**Original reason:**" : "**Reason:**";
+            description.append(reasonLabel).append(" ").append(reason).append("\n");
         }
         if (durationSeconds > 0) {
-            fields.add(discordField("Duration", durationSeconds + "s", true));
+            description.append("**Expires in:** ").append(durationSeconds).append(" second(s)\n");
         }
-        if (reason != null && !reason.isBlank()) {
-            fields.add(discordField("Reason", reason, false));
+        if (actor != null && !actor.isBlank()) {
+            description.append("**By:** ").append(actor);
         }
-        embed.put("fields", fields);
+        embed.put("description", description.toString().trim());
 
         Map<String, Object> payload = new HashMap<>();
         List<Map<String, Object>> embeds = new ArrayList<>();
