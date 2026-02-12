@@ -64,7 +64,9 @@ public class DiscordNotifier {
         vars.put("reason", safe(reason));
         vars.put("operator", safe(actor));
         vars.put("expiration_time", "0 second(s)");
-        sendTemplate(config, manual ? discordMessagesConfig.unjailMessage : discordMessagesConfig.autoUnjailMessage, vars);
+        MessageTemplate template = manual ? discordMessagesConfig.unjailMessage : discordMessagesConfig.autoUnjailMessage;
+        forceOriginalReasonLabel(template);
+        sendTemplate(config, template, vars);
     }
 
     private void sendTemplate(JailMod.Config config, MessageTemplate template, Map<String, String> vars) {
@@ -291,6 +293,38 @@ public class DiscordNotifier {
         return value == null ? "" : value;
     }
 
+    private static void forceOriginalReasonLabel(MessageTemplate template) {
+        if (template == null) {
+            return;
+        }
+        forceOriginalReasonLabel(template.embedMessage);
+        forceOriginalReasonLabel(template.message);
+    }
+
+    private static void forceOriginalReasonLabel(List<String> lines) {
+        if (lines == null || lines.isEmpty()) {
+            return;
+        }
+        for (int i = 0; i < lines.size(); i++) {
+            String line = lines.get(i);
+            if (line == null || !line.contains("${reason}")) {
+                continue;
+            }
+            String lower = line.toLowerCase();
+            if (lower.contains("original reason")) {
+                continue;
+            }
+            String updated = line
+                    .replace("**Reason**:", "**Original reason:**")
+                    .replace("**reason**:", "**Original reason:**")
+                    .replace("Reason:", "**Original reason:**")
+                    .replace("reason:", "**Original reason:**");
+            if (!updated.equals(line)) {
+                lines.set(i, updated);
+            }
+        }
+    }
+
     public static class DiscordMessagesConfig {
         public boolean sendJailMessage = true;
         public MessageTemplate jailMessage = MessageTemplate.defaultJailMessage();
@@ -312,6 +346,8 @@ public class DiscordNotifier {
             jailMessage.patch();
             unjailMessage.patch();
             autoUnjailMessage.patch();
+            forceOriginalReasonLabel(unjailMessage);
+            forceOriginalReasonLabel(autoUnjailMessage);
         }
     }
 
@@ -351,7 +387,7 @@ public class DiscordNotifier {
             t.embedMessage = List.of(
                     "${banned} has been unjailed!",
                     "",
-                    "**Reason**: ${reason}",
+                    "**Original reason:** ${reason}",
                     "**By**: ${operator}");
             return t;
         }
@@ -362,7 +398,7 @@ public class DiscordNotifier {
             t.embedMessage = List.of(
                     "${banned} has been unjailed!",
                     "",
-                    "**Reason**: ${reason}",
+                    "**Original reason:** ${reason}",
                     "**By**: ${operator}");
             return t;
         }
