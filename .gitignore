@@ -25,6 +25,7 @@ notes/
 bin/
 .classpath
 .project
+/.qodo
 
 # macos
 

@@ -7,16 +7,16 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
 import com.example.jailmod.JailMod;
 
-import net.minecraft.entity.ItemEntity;
-import net.minecraft.entity.player.PlayerEntity;
-import net.minecraft.server.network.ServerPlayerEntity;
+import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.world.entity.item.ItemEntity;
+import net.minecraft.world.entity.player.Player;
 
 @Mixin(ItemEntity.class)
 public class ItemEntityMixin {
 
-    @Inject(method = "onPlayerCollision", at = @At("HEAD"), cancellable = true)
-    private void jailmod$preventJailedPickup(PlayerEntity player, CallbackInfo ci) {
-        if (player instanceof ServerPlayerEntity serverPlayer && JailMod.isPlayerInJail(serverPlayer)) {
+    @Inject(method = "playerTouch", at = @At("HEAD"), cancellable = true)
+    private void jailmod$preventJailedPickup(Player player, CallbackInfo ci) {
+        if (player instanceof ServerPlayer serverPlayer && JailMod.isPlayerInJail(serverPlayer)) {
             ci.cancel();
         }
     }

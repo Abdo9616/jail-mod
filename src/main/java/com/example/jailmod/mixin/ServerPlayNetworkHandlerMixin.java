@@ -8,38 +8,38 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
 import com.example.jailmod.JailMod;
 
-import net.minecraft.network.packet.c2s.play.ClickSlotC2SPacket;
-import net.minecraft.network.packet.c2s.play.PlayerActionC2SPacket;
-import net.minecraft.screen.slot.SlotActionType;
-import net.minecraft.server.network.ServerPlayNetworkHandler;
-import net.minecraft.server.network.ServerPlayerEntity;
+import net.minecraft.network.protocol.game.ServerboundContainerClickPacket;
+import net.minecraft.network.protocol.game.ServerboundPlayerActionPacket;
+import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.server.network.ServerGamePacketListenerImpl;
+import net.minecraft.world.inventory.ContainerInput;
 
-@Mixin(ServerPlayNetworkHandler.class)
+@Mixin(ServerGamePacketListenerImpl.class)
 public class ServerPlayNetworkHandlerMixin {
 
     @Shadow
-    public ServerPlayerEntity player;
+    public ServerPlayer player;
 
-    @Inject(method = "onPlayerAction", at = @At("HEAD"), cancellable = true)
-    private void jailmod$blockDropActions(PlayerActionC2SPacket packet, CallbackInfo ci) {
+    @Inject(method = "handlePlayerAction", at = @At("HEAD"), cancellable = true)
+    private void jailmod$blockDropActions(ServerboundPlayerActionPacket packet, CallbackInfo ci) {
         if (JailMod.isPlayerInJail(player)) {
-            PlayerActionC2SPacket.Action action = packet.getAction();
-            if (action == PlayerActionC2SPacket.Action.DROP_ITEM
-                    || action == PlayerActionC2SPacket.Action.DROP_ALL_ITEMS) {
-                player.getInventory().markDirty();
-                player.currentScreenHandler.updateToClient();
-                player.playerScreenHandler.updateToClient();
+            ServerboundPlayerActionPacket.Action action = packet.getAction();
+            if (action == ServerboundPlayerActionPacket.Action.DROP_ITEM
+                    || action == ServerboundPlayerActionPacket.Action.DROP_ALL_ITEMS) {
+                player.getInventory().setChanged();
+                player.containerMenu.broadcastChanges();
+                player.inventoryMenu.broadcastChanges();
                 ci.cancel();
             }
         }
     }
 
-    @Inject(method = "onClickSlot", at = @At("HEAD"), cancellable = true)
-    private void jailmod$blockThrowFromInventory(ClickSlotC2SPacket packet, CallbackInfo ci) {
-        if (JailMod.isPlayerInJail(player) && packet.actionType() == SlotActionType.THROW) {
-            player.getInventory().markDirty();
-            player.currentScreenHandler.updateToClient();
-            player.playerScreenHandler.updateToClient();
+    @Inject(method = "handleContainerClick", at = @At("HEAD"), cancellable = true)
+    private void jailmod$blockThrowFromInventory(ServerboundContainerClickPacket packet, CallbackInfo ci) {
+        if (JailMod.isPlayerInJail(player) && packet.containerInput() == ContainerInput.THROW) {
+            player.getInventory().setChanged();
+            player.containerMenu.broadcastChanges();
+            player.inventoryMenu.broadcastChanges();
             ci.cancel();
         }
     }

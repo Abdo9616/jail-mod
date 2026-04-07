@@ -7,18 +7,18 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
 import com.example.jailmod.JailMod;
 
-import net.minecraft.server.network.ServerPlayerEntity;
+import net.minecraft.server.level.ServerPlayer;
 
-@Mixin(ServerPlayerEntity.class)
+@Mixin(ServerPlayer.class)
 public class ServerPlayerEntityMixin {
 
-    @Inject(method = "dropSelectedItem", at = @At("HEAD"), cancellable = true)
+    @Inject(method = "drop(Z)V", at = @At("HEAD"), cancellable = true)
     private void jailmod$blockDropSelectedItem(boolean entireStack, CallbackInfo ci) {
-        ServerPlayerEntity self = (ServerPlayerEntity) (Object) this;
+        ServerPlayer self = (ServerPlayer) (Object) this;
         if (JailMod.isPlayerInJail(self)) {
-            self.getInventory().markDirty();
-            self.currentScreenHandler.updateToClient();
-            self.playerScreenHandler.updateToClient();
+            self.getInventory().setChanged();
+            self.containerMenu.broadcastChanges();
+            self.inventoryMenu.broadcastChanges();
             ci.cancel();
         }
     }

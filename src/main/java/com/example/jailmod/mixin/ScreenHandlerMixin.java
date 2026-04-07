@@ -7,22 +7,22 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
 import com.example.jailmod.JailMod;
 
-import net.minecraft.entity.player.PlayerEntity;
-import net.minecraft.screen.ScreenHandler;
-import net.minecraft.screen.slot.SlotActionType;
-import net.minecraft.server.network.ServerPlayerEntity;
+import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.world.entity.player.Player;
+import net.minecraft.world.inventory.AbstractContainerMenu;
+import net.minecraft.world.inventory.ContainerInput;
 
-@Mixin(ScreenHandler.class)
+@Mixin(AbstractContainerMenu.class)
 public class ScreenHandlerMixin {
 
-    @Inject(method = "onSlotClick", at = @At("HEAD"), cancellable = true)
-    private void jailmod$blockThrow(int slotIndex, int button, SlotActionType actionType, PlayerEntity player,
+    @Inject(method = "clicked", at = @At("HEAD"), cancellable = true)
+    private void jailmod$blockThrow(int slotIndex, int button, ContainerInput actionType, Player player,
             CallbackInfo ci) {
-        if (player instanceof ServerPlayerEntity serverPlayer && JailMod.isPlayerInJail(serverPlayer)) {
-            if (actionType == SlotActionType.THROW || slotIndex == -999) {
-                serverPlayer.getInventory().markDirty();
-                ((ScreenHandler) (Object) this).updateToClient();
-                serverPlayer.playerScreenHandler.updateToClient();
+        if (player instanceof ServerPlayer serverPlayer && JailMod.isPlayerInJail(serverPlayer)) {
+            if (actionType == ContainerInput.THROW || slotIndex == -999) {
+                serverPlayer.getInventory().setChanged();
+                ((AbstractContainerMenu) (Object) this).broadcastChanges();
+                serverPlayer.inventoryMenu.broadcastChanges();
                 ci.cancel();
             }
         }

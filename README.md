@@ -25,15 +25,18 @@ How to use:
 2.  Set the coordinates where you want the prisoner to spawn with the command `/jail set x y z`  (example `/jail set 0 60 0`)
     
 3.  Reload the configuration using `/jail reload` .
-4.  Send someone to jail with `/jail playerexample 120 Griefing`.
+4.  Send someone to jail with `/jail imprison playerexample 120 Griefing`.
 5.  If you don't want to wait for the prison time you set in seconds (example **120** seconds), you can release the player early with the command `/unjail playerexample`
 
 
 Requirements
 ------------
 
-*   Minecraft 1.21 or later
+*   Minecraft 26.1 - 26.1.1
+*   Java 25
+*   Fabric Loader
 *   Fabric API
+
 
 Installation
 ------------
@@ -45,12 +48,12 @@ Installation
 Available Commands
 ------------------
 
-### 1. `/jail player time reason`
+### 1. `/jail imprison player time reason`
 
 *   **Description**: Jails a player for a specified time in seconds, specifying the reason.
 *   **Who can use it**: Only admins or server operators.
-*   **Syntax**:  `/jail player_name time_in_seconds reason`
-*   **Example**: `/jail Steve 300 Griefing`This command jails the player `Steve` for 300 seconds (5 minutes) with the reason "Griefing".
+*   **Syntax**:  `/jail imprison player_name time_in_seconds reason`
+*   **Example**: `/jail imprison Steve 300 Griefing`This command jails the player `Steve` for 300 seconds (5 minutes) with the reason "Griefing".
 
 ### 2. `/unjail player`
 
@@ -203,7 +206,7 @@ Set Jail spawn position:
 
 Jailing a player for an unfair action:
 
-`/jail Alex 600 Offending another player`
+`/jail imprison Alex 600 Offending another player`
 
 This jails Alex for 10 minutes with the reason "Offending another player".
 
@@ -212,3 +215,5 @@ Checking jail time:
 `/jail info`
 
 A jailed player can use this command to check how much time they have left.
+
+

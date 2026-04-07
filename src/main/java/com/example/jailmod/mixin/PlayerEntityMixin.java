@@ -7,24 +7,24 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 
 import com.example.jailmod.JailMod;
 
-import net.minecraft.entity.ItemEntity;
-import net.minecraft.entity.player.PlayerEntity;
-import net.minecraft.item.ItemStack;
-import net.minecraft.server.network.ServerPlayerEntity;
+import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.world.entity.item.ItemEntity;
+import net.minecraft.world.entity.player.Player;
+import net.minecraft.world.item.ItemStack;
 
-@Mixin(PlayerEntity.class)
+@Mixin(Player.class)
 public class PlayerEntityMixin {
 
-    @Inject(method = "dropItem", at = @At("HEAD"), cancellable = true)
+    @Inject(method = "drop(Lnet/minecraft/world/item/ItemStack;Z)Lnet/minecraft/world/entity/item/ItemEntity;", at = @At("HEAD"), cancellable = true)
     private void jailmod$preventDrop(ItemStack stack, boolean retainOwnership,
             CallbackInfoReturnable<ItemEntity> cir) {
-        PlayerEntity self = (PlayerEntity) (Object) this;
-        if (self instanceof ServerPlayerEntity serverPlayer && JailMod.isPlayerInJail(serverPlayer)) {
+        Player self = (Player) (Object) this;
+        if (self instanceof ServerPlayer serverPlayer && JailMod.isPlayerInJail(serverPlayer)) {
             if (!stack.isEmpty()) {
-                serverPlayer.getInventory().insertStack(stack);
-                serverPlayer.getInventory().markDirty();
-                serverPlayer.currentScreenHandler.updateToClient();
-                serverPlayer.playerScreenHandler.updateToClient();
+                serverPlayer.getInventory().add(stack);
+                serverPlayer.getInventory().setChanged();
+                serverPlayer.containerMenu.broadcastChanges();
+                serverPlayer.inventoryMenu.broadcastChanges();
             }
             cir.setReturnValue(null);
         }

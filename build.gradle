@@ -1,5 +1,5 @@
 plugins {
-	id 'fabric-loom' version "${loom_version}"
+	id 'net.fabricmc.fabric-loom' version "${loom_version}"
 	id 'maven-publish'
 }
 
@@ -11,35 +11,43 @@ base {
 }
 
 repositories {
+	maven { url = 'https://maven.fabricmc.net/' }
 	mavenCentral()
 }
 
 dependencies {
 	minecraft "com.mojang:minecraft:${project.minecraft_version}"
-	mappings "net.fabricmc:yarn:${project.yarn_mappings}:v2"
-	modImplementation "net.fabricmc:fabric-loader:${project.loader_version}"
 
-	// Fabric API
-	modImplementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_version}"
+	def loaderDependency = "net.fabricmc:fabric-loader:${project.loader_version}"
+	def fabricApiDependency = "net.fabricmc.fabric-api:fabric-api:${project.fabric_version}"
+
+	if (configurations.findByName("modImplementation") != null) {
+		modImplementation loaderDependency
+		modImplementation fabricApiDependency
+	} else {
+		// TODO(JM-261): Re-check when Loom config resolution stabilizes in this environment.
+		implementation loaderDependency
+		implementation fabricApiDependency
+	}
 }
 
 processResources {
 	inputs.property "version", project.version
 
 	filesMatching("fabric.mod.json") {
-		expand "version": inputs.properties.version
+		expand "version": project.version
 	}
 }
 
 tasks.withType(JavaCompile).configureEach {
-	it.options.release = 21
+	it.options.release = 25
 }
 
 java {
 	withSourcesJar()
 
-	sourceCompatibility = JavaVersion.VERSION_21
-	targetCompatibility = JavaVersion.VERSION_21
+	sourceCompatibility = JavaVersion.VERSION_25
+	targetCompatibility = JavaVersion.VERSION_25
 }
 
 jar {
@@ -52,9 +60,10 @@ jar {
 
 publishing {
 	publications {
-		create("mavenJava", MavenPublication) {
-			artifactId = project.archives_base_name
+		mavenJava(MavenPublication) {
 			from components.java
 		}
+	}
+	repositories {
 	}
 }

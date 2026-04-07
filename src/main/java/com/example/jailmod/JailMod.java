@@ -32,27 +32,27 @@ import net.fabricmc.fabric.api.event.player.UseBlockCallback;
 import net.fabricmc.fabric.api.event.player.UseEntityCallback;
 import net.fabricmc.fabric.api.event.player.UseItemCallback;
 import net.fabricmc.fabric.api.networking.v1.ServerPlayConnectionEvents;
-import net.minecraft.command.argument.EntityArgumentType;
-import net.minecraft.entity.effect.StatusEffect;
-import net.minecraft.entity.effect.StatusEffectInstance;
-import net.minecraft.item.ItemStack;
-import net.minecraft.item.Items;
-import net.minecraft.network.packet.s2c.play.PositionFlag;
-import net.minecraft.registry.Registries;
-import net.minecraft.registry.RegistryKey;
-import net.minecraft.registry.RegistryKeys;
-import net.minecraft.registry.entry.RegistryEntry;
+import net.minecraft.ChatFormatting;
+import net.minecraft.commands.CommandSourceStack;
+import net.minecraft.commands.Commands;
+import net.minecraft.commands.arguments.EntityArgument;
+import net.minecraft.core.BlockPos;
+import net.minecraft.core.Holder;
+import net.minecraft.core.registries.BuiltInRegistries;
+import net.minecraft.core.registries.Registries;
+import net.minecraft.network.chat.Component;
+import net.minecraft.resources.Identifier;
+import net.minecraft.resources.ResourceKey;
 import net.minecraft.server.MinecraftServer;
-import net.minecraft.server.command.CommandManager;
-import net.minecraft.server.command.ServerCommandSource;
-import net.minecraft.server.network.ServerPlayerEntity;
-import net.minecraft.server.world.ServerWorld;
-import net.minecraft.text.Text;
-import net.minecraft.util.ActionResult;
-import net.minecraft.util.Formatting;
-import net.minecraft.util.Identifier;
-import net.minecraft.util.math.BlockPos;
-import net.minecraft.world.World;
+import net.minecraft.server.level.ServerLevel;
+import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.world.InteractionResult;
+import net.minecraft.world.effect.MobEffect;
+import net.minecraft.world.effect.MobEffectInstance;
+import net.minecraft.world.entity.Relative;
+import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.item.Items;
+import net.minecraft.world.level.Level;
 
 public class JailMod implements ModInitializer {
 
@@ -67,14 +67,14 @@ public class JailMod implements ModInitializer {
 
     private static MinecraftServer serverInstance;
     private static DiscordNotifier discordNotifier;
-    private static final SuggestionProvider<ServerCommandSource> JAILED_PLAYERS_SUGGESTIONS = (context, builder) -> {
+    private static final SuggestionProvider<CommandSourceStack> JAILED_PLAYERS_SUGGESTIONS = (context, builder) -> {
         MinecraftServer server = context.getSource().getServer();
         if (server == null) {
             return builder.buildFuture();
         }
 
         for (UUID uuid : jailedPlayers.keySet()) {
-            ServerPlayerEntity player = server.getPlayerManager().getPlayer(uuid);
+            ServerPlayer player = server.getPlayerList().getPlayer(uuid);
             if (player != null) {
                 builder.suggest(player.getName().getString());
             }
@@ -129,7 +129,7 @@ public class JailMod implements ModInitializer {
     private static class JailData {
         public UUID playerUUID;
         public BlockPos originalSpawnPos;
-        public RegistryKey<World> originalSpawnDimension;
+        public ResourceKey<Level> originalSpawnDimension;
         public boolean hadSpawnPoint;
         public String reason;
         public int remainingTicks; // Remaining time in ticks (1 second = 20 ticks)
@@ -155,10 +155,10 @@ public class JailMod implements ModInitializer {
         public boolean savedInvulnerable;
         public int savedFireTicks;
 
-        public List<StatusEffectSnapshot> savedEffects;
+        public List<MobEffectSnapshot> savedEffects;
     }
 
-    private static class StatusEffectSnapshot {
+    private static class MobEffectSnapshot {
         public String effectId;
         public int duration;
         public int amplifier;
@@ -183,9 +183,9 @@ public class JailMod implements ModInitializer {
     public void onInitialize() {
         ServerLifecycleEvents.SERVER_STARTED.register(server -> {
             serverInstance = server;
-            Text message = Text.literal("[Jail-Mod] Loaded")
-                    .styled(style -> style.withColor(0x00FF00).withBold(true));
-            server.sendMessage(message);
+            Component message = Component.literal("[Jail-Mod] Loaded")
+                    .withStyle(style -> style.withColor(0x00FF00).withBold(true));
+            server.sendSystemMessage(message);
         });
 
         loadConfig();
@@ -199,7 +199,7 @@ public class JailMod implements ModInitializer {
             for (Map.Entry<UUID, JailData> entry : jailedPlayers.entrySet()) {
                 UUID playerUUID = entry.getKey();
                 JailData jailData = entry.getValue();
-                ServerPlayerEntity player = server.getPlayerManager().getPlayer(playerUUID);
+                ServerPlayer player = server.getPlayerList().getPlayer(playerUUID);
                 if (player != null) {
                     jailData.remainingTicks--;
                     applyFrozenStats(player, jailData);
@@ -216,8 +216,8 @@ public class JailMod implements ModInitializer {
         registerInteractionListeners();
 
         ServerPlayConnectionEvents.JOIN.register((handler, sender, server) -> {
-            ServerPlayerEntity player = handler.getPlayer();
-            UUID playerUUID = player.getUuid();
+            ServerPlayer player = handler.getPlayer();
+            UUID playerUUID = player.getUUID();
             if (jailedPlayers.containsKey(playerUUID)) {
                 JailData jailData = jailedPlayers.get(playerUUID);
                 if (jailData.remainingTicks > 0) {
@@ -229,14 +229,14 @@ public class JailMod implements ModInitializer {
         });
 
         CommandRegistrationCallback.EVENT.register((dispatcher, registryAccess, environment) -> {
-            dispatcher.register(CommandManager.literal("jail")
-                    .then(CommandManager.literal("imprison")
+            dispatcher.register(Commands.literal("jail")
+                    .then(Commands.literal("imprison")
                             .requires(source -> hasAdminPermission(source))
-                            .then(CommandManager.argument("player", EntityArgumentType.player())
-                                    .then(CommandManager.argument("time", IntegerArgumentType.integer(1))
-                                            .then(CommandManager.argument("reason", StringArgumentType.greedyString())
+                            .then(Commands.argument("player", EntityArgument.player())
+                                    .then(Commands.argument("time", IntegerArgumentType.integer(1))
+                                            .then(Commands.argument("reason", StringArgumentType.greedyString())
                                                     .executes(context -> {
-                                                        ServerPlayerEntity player = EntityArgumentType
+                                                        ServerPlayer player = EntityArgument
                                                                 .getPlayer(context, "player");
                                                         int timeInSeconds = IntegerArgumentType.getInteger(context,
                                                                 "time");
@@ -244,45 +244,45 @@ public class JailMod implements ModInitializer {
 
                                                         if (player != null) {
                                                             JailUpdateResult result = jailPlayer(player, timeInSeconds,
-                                                                    reason, context.getSource().getName(), true);
+                                                                    reason, context.getSource().getTextName(), true);
                                                             if (result.wasAlreadyJailed) {
-                                                                context.getSource().sendFeedback(
-                                                                        () -> Text.of("Added " + result.addedSeconds
+                                                                context.getSource().sendSuccess(
+                                                                        () -> Component.literal("Added " + result.addedSeconds
                                                                                 + " seconds to " + player.getName()
                                                                                         .getString()
                                                                                 + ". Remaining: "
                                                                                 + result.totalSeconds + " seconds."),
                                                                         true);
                                                             } else {
-                                                                context.getSource().sendFeedback(
-                                                                        () -> Text.of("Player "
+                                                                context.getSource().sendSuccess(
+                                                                        () -> Component.literal("Player "
                                                                                 + player.getName().getString()
                                                                                 + " jailed for " + timeInSeconds
                                                                                 + " seconds."),
                                                                         true);
                                                             }
                                                         } else {
-                                                            context.getSource().sendError(Text.of("Player not found!"));
+                                                            context.getSource().sendFailure(Component.literal("Player not found!"));
                                                         }
                                                         return 1;
                                                     })))))
-                    .then(CommandManager.literal("reload")
+                    .then(Commands.literal("reload")
                             .requires(source -> hasAdminPermission(source))
                             .executes(context -> {
                                 loadConfig();
                                 loadLanguage();
                                 discordNotifier.reload();
-                                context.getSource().sendFeedback(
-                                        () -> Text.of(
+                                context.getSource().sendSuccess(
+                                        () -> Component.literal(
                                                 "Configuration, language strings, and Discord message templates successfully reloaded!"),
                                         true);
                                 return 1;
                             }))
-                    .then(CommandManager.literal("set")
+                    .then(Commands.literal("set")
                             .requires(source -> hasAdminPermission(source))
-                            .then(CommandManager.argument("x", IntegerArgumentType.integer())
-                                    .then(CommandManager.argument("y", IntegerArgumentType.integer())
-                                            .then(CommandManager.argument("z", IntegerArgumentType.integer())
+                            .then(Commands.argument("x", IntegerArgumentType.integer())
+                                    .then(Commands.argument("y", IntegerArgumentType.integer())
+                                            .then(Commands.argument("z", IntegerArgumentType.integer())
                                                     .executes(context -> {
                                                         int x = IntegerArgumentType.getInteger(context, "x");
                                                         int y = IntegerArgumentType.getInteger(context, "y");
@@ -292,49 +292,49 @@ public class JailMod implements ModInitializer {
                                                         saveConfig();
 
                                                         context.getSource()
-                                                                .sendFeedback(() -> Text.of("Jail position set to (" + x
+                                                                .sendSuccess(() -> Component.literal("Jail position set to (" + x
                                                                         + ", " + y + ", " + z + ")"), true);
                                                         return 1;
                                                     })))))
-                    .then(CommandManager.literal("info")
+                    .then(Commands.literal("info")
                             .executes(context -> {
-                                ServerPlayerEntity player = context.getSource().getPlayer();
+                                ServerPlayer player = context.getSource().getPlayer();
                                 if (player != null && isPlayerInJail(player)) {
-                                    JailData jailData = jailedPlayers.get(player.getUuid());
+                                    JailData jailData = jailedPlayers.get(player.getUUID());
                                     int remainingSeconds = jailData.remainingTicks / 20;
                                     String reason = jailData.reason;
                                     String message = languageStrings.get("jail_info_message")
                                             .replace("{time}", String.valueOf(remainingSeconds))
                                             .replace("{reason}", reason);
-                                    player.sendMessage(Text.of(message), false);
+                                    player.sendSystemMessage(Component.literal(message), false);
                                     return 1;
                                 } else {
                                     String notInJailMessage = languageStrings.get("not_in_jail_message");
-                                    context.getSource().sendFeedback(() -> Text.of(notInJailMessage), false);
+                                    context.getSource().sendSuccess(() -> Component.literal(notInJailMessage), false);
                                     return 0;
                                 }
                             })));
 
-            dispatcher.register(CommandManager.literal("unjail")
+            dispatcher.register(Commands.literal("unjail")
                     .requires(source -> hasAdminPermission(source))
-                    .then(CommandManager.argument("player", EntityArgumentType.player())
+                    .then(Commands.argument("player", EntityArgument.player())
                             .suggests(JAILED_PLAYERS_SUGGESTIONS)
                             .executes(context -> {
-                                ServerPlayerEntity player = EntityArgumentType.getPlayer(context, "player");
+                                ServerPlayer player = EntityArgument.getPlayer(context, "player");
                                 if (player != null) {
                                     if (!isPlayerInJail(player)) {
-                                        context.getSource().sendError(Text.literal("Player "
+                                        context.getSource().sendFailure(Component.literal("Player "
                                                 + player.getName().getString() + " is not jailed.")
-                                                .formatted(Formatting.RED));
+                                                .withStyle(ChatFormatting.RED));
                                         return 0;
                                     }
-                                    unjailPlayer(player, true, context.getSource().getName());
-                                    context.getSource().sendFeedback(
-                                            () -> Text.of("Player " + player.getName().getString()
+                                    unjailPlayer(player, true, context.getSource().getTextName());
+                                    context.getSource().sendSuccess(
+                                            () -> Component.literal("Player " + player.getName().getString()
                                                     + " has been released from jail."),
                                             true);
                                 } else {
-                                    context.getSource().sendError(Text.of("Player not found!"));
+                                    context.getSource().sendFailure(Component.literal("Player not found!"));
                                 }
                                 return 1;
                             })));
@@ -343,12 +343,12 @@ public class JailMod implements ModInitializer {
         ServerLifecycleEvents.SERVER_STOPPED.register(server -> saveJailData());
     }
 
-    private static boolean hasAdminPermission(ServerCommandSource source) {
-        if (source.getEntity() instanceof ServerPlayerEntity player) {
+    private static boolean hasAdminPermission(CommandSourceStack source) {
+        if (source.getEntity() instanceof ServerPlayer player) {
             // Very stable OP check: compare player name against the list of OP names
             // This bypasses mapping issues with hasPermissionLevel or isOperator
             String playerName = player.getName().getString();
-            for (String opName : source.getServer().getPlayerManager().getOpList().getNames()) {
+            for (String opName : source.getServer().getPlayerList().getOpNames()) {
                 if (opName.equalsIgnoreCase(playerName)) {
                     return true;
                 }
@@ -360,7 +360,7 @@ public class JailMod implements ModInitializer {
                 String[] roles = rolesString.split(",");
                 for (String role : roles) {
                     String trimmedRole = role.trim();
-                    if (!trimmedRole.equalsIgnoreCase("op") && player.getCommandTags().contains(trimmedRole)) {
+                    if (!trimmedRole.equalsIgnoreCase("op") && player.entityTags().contains(trimmedRole)) {
                         return true;
                     }
                 }
@@ -374,72 +374,72 @@ public class JailMod implements ModInitializer {
 
     private void registerInteractionListeners() {
         AttackBlockCallback.EVENT.register((player, world, hand, pos, direction) -> {
-            if (player instanceof ServerPlayerEntity serverPlayer && isPlayerInJail(serverPlayer)) {
-                serverPlayer.sendMessage(Text.of(languageStrings.get("block_interaction_denied")), true);
-                return ActionResult.FAIL;
+            if (player instanceof ServerPlayer serverPlayer && isPlayerInJail(serverPlayer)) {
+                serverPlayer.sendSystemMessage(Component.literal(languageStrings.get("block_interaction_denied")), true);
+                return InteractionResult.FAIL;
             }
-            return ActionResult.PASS;
+            return InteractionResult.PASS;
         });
 
         AttackEntityCallback.EVENT.register((player, world, hand, entity, hitResult) -> {
-            if (player instanceof ServerPlayerEntity serverPlayer && isPlayerInJail(serverPlayer)) {
-                serverPlayer.sendMessage(Text.of(languageStrings.get("entity_interaction_denied")), true);
-                return ActionResult.FAIL;
+            if (player instanceof ServerPlayer serverPlayer && isPlayerInJail(serverPlayer)) {
+                serverPlayer.sendSystemMessage(Component.literal(languageStrings.get("entity_interaction_denied")), true);
+                return InteractionResult.FAIL;
             }
-            return ActionResult.PASS;
+            return InteractionResult.PASS;
         });
 
         UseBlockCallback.EVENT.register((player, world, hand, hitResult) -> {
-            if (player instanceof ServerPlayerEntity serverPlayer && isPlayerInJail(serverPlayer)) {
-                serverPlayer.sendMessage(Text.of(languageStrings.get("block_interaction_denied")), true);
-                return ActionResult.FAIL;
+            if (player instanceof ServerPlayer serverPlayer && isPlayerInJail(serverPlayer)) {
+                serverPlayer.sendSystemMessage(Component.literal(languageStrings.get("block_interaction_denied")), true);
+                return InteractionResult.FAIL;
             }
-            return ActionResult.PASS;
+            return InteractionResult.PASS;
         });
 
         UseEntityCallback.EVENT.register((player, world, hand, entity, hitResult) -> {
-            if (player instanceof ServerPlayerEntity serverPlayer && isPlayerInJail(serverPlayer)) {
-                serverPlayer.sendMessage(Text.of(languageStrings.get("entity_interaction_denied")), true);
-                return ActionResult.FAIL;
+            if (player instanceof ServerPlayer serverPlayer && isPlayerInJail(serverPlayer)) {
+                serverPlayer.sendSystemMessage(Component.literal(languageStrings.get("entity_interaction_denied")), true);
+                return InteractionResult.FAIL;
             }
-            return ActionResult.PASS;
+            return InteractionResult.PASS;
         });
 
         UseItemCallback.EVENT.register((player, world, hand) -> {
-            if (player instanceof ServerPlayerEntity serverPlayer && isPlayerInJail(serverPlayer)) {
-                ItemStack itemStack = player.getStackInHand(hand);
+            if (player instanceof ServerPlayer serverPlayer && isPlayerInJail(serverPlayer)) {
+                ItemStack itemStack = player.getItemInHand(hand);
 
-                if (itemStack.isOf(Items.LAVA_BUCKET) || itemStack.isOf(Items.WATER_BUCKET)) {
-                    serverPlayer.sendMessage(Text.of(languageStrings.get("bucket_use_denied")), true);
-                    return ActionResult.FAIL;
+                if (itemStack.is(Items.LAVA_BUCKET) || itemStack.is(Items.WATER_BUCKET)) {
+                    serverPlayer.sendSystemMessage(Component.literal(languageStrings.get("bucket_use_denied")), true);
+                    return InteractionResult.FAIL;
                 }
 
-                serverPlayer.sendMessage(Text.of(languageStrings.get("item_use_denied")), true);
-                return ActionResult.FAIL;
+                serverPlayer.sendSystemMessage(Component.literal(languageStrings.get("item_use_denied")), true);
+                return InteractionResult.FAIL;
             }
-            return ActionResult.PASS;
+            return InteractionResult.PASS;
         });
 
         PlayerBlockBreakEvents.BEFORE.register((world, player, pos, state, blockEntity) -> {
-            if (player instanceof ServerPlayerEntity serverPlayer && isPlayerInJail(serverPlayer)) {
-                serverPlayer.sendMessage(Text.of(languageStrings.get("block_break_denied")), true);
+            if (player instanceof ServerPlayer serverPlayer && isPlayerInJail(serverPlayer)) {
+                serverPlayer.sendSystemMessage(Component.literal(languageStrings.get("block_break_denied")), true);
                 return false;
             }
             return true;
         });
     }
 
-    public static boolean isPlayerInJail(ServerPlayerEntity player) {
-        return player != null && jailedPlayers.containsKey(player.getUuid());
+    public static boolean isPlayerInJail(ServerPlayer player) {
+        return player != null && jailedPlayers.containsKey(player.getUUID());
     }
 
-    private JailUpdateResult jailPlayer(ServerPlayerEntity player, int timeInSeconds, String reason, String actorName,
+    private JailUpdateResult jailPlayer(ServerPlayer player, int timeInSeconds, String reason, String actorName,
             boolean notifyWebhook) {
         if (actorName == null || actorName.isEmpty()) {
             actorName = "system";
         }
         int addedTicks = timeInSeconds * 20; // Convert seconds to ticks
-        JailData existingData = jailedPlayers.get(player.getUuid());
+        JailData existingData = jailedPlayers.get(player.getUUID());
         if (existingData != null) {
             existingData.remainingTicks += addedTicks;
             existingData.reason = reason;
@@ -458,11 +458,11 @@ public class JailMod implements ModInitializer {
 
         // Save the player's original spawn position
         BlockPos originalSpawnPos = null;
-        RegistryKey<World> originalSpawnDimension = null;
-        var respawn = player.getRespawn();
+        ResourceKey<Level> originalSpawnDimension = null;
+        var respawn = player.getRespawnConfig();
         if (respawn != null && respawn.respawnData() != null) {
-            originalSpawnPos = respawn.respawnData().getPos();
-            originalSpawnDimension = respawn.respawnData().getDimension();
+            originalSpawnPos = respawn.respawnData().pos();
+            originalSpawnDimension = respawn.respawnData().dimension();
         }
         boolean hadSpawnPoint = originalSpawnPos != null;
 
@@ -470,13 +470,13 @@ public class JailMod implements ModInitializer {
         double lastX = player.getX();
         double lastY = player.getY();
         double lastZ = player.getZ();
-        float lastYaw = player.getYaw();
-        float lastPitch = player.getPitch();
-        String lastDimension = player.getEntityWorld().getRegistryKey().getValue().toString();
+        float lastYaw = player.getYRot();
+        float lastPitch = player.getXRot();
+        String lastDimension = player.level().dimension().identifier().toString();
 
         // Save player data
         JailData jailData = new JailData();
-        jailData.playerUUID = player.getUuid();
+        jailData.playerUUID = player.getUUID();
         jailData.originalSpawnPos = originalSpawnPos;
         jailData.originalSpawnDimension = originalSpawnDimension;
         jailData.hadSpawnPoint = hadSpawnPoint;
@@ -490,7 +490,7 @@ public class JailMod implements ModInitializer {
         jailData.lastDimension = lastDimension;
         captureStatSnapshot(player, jailData);
 
-        jailedPlayers.put(player.getUuid(), jailData);
+        jailedPlayers.put(player.getUUID(), jailData);
 
         jailPlayer(player, jailData);
 
@@ -504,39 +504,39 @@ public class JailMod implements ModInitializer {
         return new JailUpdateResult(false, 0, Math.max(0, jailData.remainingTicks / 20));
     }
 
-    private void jailPlayer(ServerPlayerEntity player, JailData jailData) {
-        ServerWorld world = (ServerWorld) player.getEntityWorld();
+    private void jailPlayer(ServerPlayer player, JailData jailData) {
+        ServerLevel world = (ServerLevel) player.level();
 
         BlockPos jailPos = new BlockPos(config.jail_position.x, config.jail_position.y, config.jail_position.z);
-        player.teleport(world, jailPos.getX() + 0.5, jailPos.getY(), jailPos.getZ() + 0.5,
-                EnumSet.noneOf(PositionFlag.class), player.getYaw(), player.getPitch(), false);
+        player.teleportTo(world, jailPos.getX() + 0.5, jailPos.getY(), jailPos.getZ() + 0.5,
+                EnumSet.noneOf(Relative.class), player.getYRot(), player.getXRot(), false);
 
         applyFrozenStats(player, jailData);
 
         // TODO: Fix setSpawnPoint
-        // player.setSpawnPoint(new ServerPlayerEntity.Respawn(new
+        // player.setSpawnPoint(new ServerPlayer.Respawn(new
         // SpawnPoint(world.getRegistryKey(), jailPos, 0.0f, true), true), true);
 
         String messageToPlayer = languageStrings.get("jail_player")
                 .replace("{time}", String.valueOf(jailData.remainingTicks / 20))
                 .replace("{reason}", jailData.reason);
-        player.sendMessage(Text.of(messageToPlayer), false);
+        player.sendSystemMessage(Component.literal(messageToPlayer), false);
 
         String jailMessage = languageStrings.get("jail_broadcast")
                 .replace("{player}", player.getName().getString())
                 .replace("{time}", String.valueOf(jailData.remainingTicks / 20))
                 .replace("{reason}", jailData.reason);
-        serverInstance.getPlayerManager().broadcast(Text.of(jailMessage), false);
+        serverInstance.getPlayerList().broadcastSystemMessage(Component.literal(jailMessage), false);
     }
 
-    private void unjailPlayer(ServerPlayerEntity player, boolean isManual, String actorName) {
-        JailData jailData = jailedPlayers.remove(player.getUuid());
+    private void unjailPlayer(ServerPlayer player, boolean isManual, String actorName) {
+        JailData jailData = jailedPlayers.remove(player.getUUID());
 
         if (jailData != null) {
             // TODO: Restore spawn point logic
             /*
              * if (jailData.hadSpawnPoint && jailData.originalSpawnPos != null) {
-             * player.setSpawnPoint(new ServerPlayerEntity.Respawn(new
+             * player.setSpawnPoint(new ServerPlayer.Respawn(new
              * SpawnPoint(jailData.originalSpawnDimension, jailData.originalSpawnPos, 0.0f,
              * true), true), false);
              * } else {
@@ -544,45 +544,57 @@ public class JailMod implements ModInitializer {
              * }
              */
 
-            ServerWorld world = (ServerWorld) player.getEntityWorld();
+            ServerLevel world = (ServerLevel) player.level();
 
             // Teleport the player out of jail (release position)
             if (config.return_to_last_location && jailData.lastDimension != null) {
-                ServerWorld targetWorld = serverInstance.getWorld(
-                        RegistryKey.of(RegistryKeys.WORLD, net.minecraft.util.Identifier.of(jailData.lastDimension)));
-                if (targetWorld == null)
+                ServerLevel targetWorld = null;
+                Identifier lastDimensionId = Identifier.tryParse(jailData.lastDimension);
+                if (lastDimensionId != null) {
+                    // TODO(JM-261): Re-verify DIMENSION registry mapping on future Mojang mapping updates.
+                    targetWorld = serverInstance.getLevel(ResourceKey.create(Registries.DIMENSION, lastDimensionId));
+                }
+                if (targetWorld == null) {
                     targetWorld = world;
-                player.teleport(targetWorld, jailData.lastX, jailData.lastY, jailData.lastZ,
-                        EnumSet.noneOf(PositionFlag.class), jailData.lastYaw, jailData.lastPitch, false);
+                }
+                player.teleportTo(targetWorld, jailData.lastX, jailData.lastY, jailData.lastZ,
+                        EnumSet.noneOf(Relative.class), jailData.lastYaw, jailData.lastPitch, false);
             } else if (config.use_previous_position && jailData.hadSpawnPoint) {
-                player.teleport(world, jailData.originalSpawnPos.getX(), jailData.originalSpawnPos.getY(),
-                        jailData.originalSpawnPos.getZ(), EnumSet.noneOf(PositionFlag.class), player.getYaw(),
-                        player.getPitch(), false);
+                ServerLevel spawnWorld = world;
+                if (jailData.originalSpawnDimension != null) {
+                    ServerLevel configuredSpawnWorld = serverInstance.getLevel(jailData.originalSpawnDimension);
+                    if (configuredSpawnWorld != null) {
+                        spawnWorld = configuredSpawnWorld;
+                    }
+                }
+                player.teleportTo(spawnWorld, jailData.originalSpawnPos.getX(), jailData.originalSpawnPos.getY(),
+                        jailData.originalSpawnPos.getZ(), EnumSet.noneOf(Relative.class), player.getYRot(),
+                        player.getXRot(), false);
             } else {
                 BlockPos releasePos = new BlockPos(config.release_position.x, config.release_position.y,
                         config.release_position.z);
-                player.teleport(world, releasePos.getX() + 0.5, releasePos.getY(), releasePos.getZ() + 0.5,
-                        EnumSet.noneOf(PositionFlag.class), player.getYaw(), player.getPitch(), false);
+                player.teleportTo(world, releasePos.getX() + 0.5, releasePos.getY(), releasePos.getZ() + 0.5,
+                        EnumSet.noneOf(Relative.class), player.getYRot(), player.getXRot(), false);
             }
 
             restoreStatsAfterJail(player, jailData);
 
             if (isManual) {
                 String messageToPlayer = languageStrings.get("unjail_player_manual");
-                player.sendMessage(Text.of(messageToPlayer), false);
+                player.sendSystemMessage(Component.literal(messageToPlayer), false);
 
                 String broadcastMessage = languageStrings.get("unjail_broadcast_manual")
                         .replace("{player}", player.getName().getString());
-                serverInstance.getPlayerManager().broadcast(Text.of(broadcastMessage), false);
+                serverInstance.getPlayerList().broadcastSystemMessage(Component.literal(broadcastMessage), false);
                 discordNotifier.sendUnjailMessage(config, player.getName().getString(), jailData.reason, actorName,
                         true);
             } else {
                 String messageToPlayer = languageStrings.get("unjail_player_auto");
-                player.sendMessage(Text.of(messageToPlayer), false);
+                player.sendSystemMessage(Component.literal(messageToPlayer), false);
 
                 String broadcastMessage = languageStrings.get("unjail_broadcast_auto")
                         .replace("{player}", player.getName().getString());
-                serverInstance.getPlayerManager().broadcast(Text.of(broadcastMessage), false);
+                serverInstance.getPlayerList().broadcastSystemMessage(Component.literal(broadcastMessage), false);
                 discordNotifier.sendUnjailMessage(config, player.getName().getString(), jailData.reason, actorName,
                         false);
             }
@@ -591,23 +603,23 @@ public class JailMod implements ModInitializer {
         }
     }
 
-    private void captureStatSnapshot(ServerPlayerEntity player, JailData jailData) {
+    private void captureStatSnapshot(ServerPlayer player, JailData jailData) {
         jailData.savedHealth = player.getHealth();
-        var hunger = player.getHungerManager();
+        var hunger = player.getFoodData();
         jailData.savedFoodLevel = hunger.getFoodLevel();
         jailData.savedSaturationLevel = hunger.getSaturationLevel();
-        jailData.savedAir = player.getAir();
+        jailData.savedAir = player.getAirSupply();
         jailData.savedAbsorption = player.getAbsorptionAmount();
         jailData.savedXpLevel = player.experienceLevel;
         jailData.savedXpProgress = player.experienceProgress;
         jailData.savedTotalXp = player.totalExperience;
         jailData.savedInvulnerable = player.getAbilities().invulnerable;
-        jailData.savedFireTicks = player.getFireTicks();
+        jailData.savedFireTicks = player.getRemainingFireTicks();
         jailData.hasStatSnapshot = true;
         captureEffectSnapshot(player, jailData);
     }
 
-    private void applyFrozenStats(ServerPlayerEntity player, JailData jailData) {
+    private void applyFrozenStats(ServerPlayer player, JailData jailData) {
         if (!jailData.hasStatSnapshot) {
             captureStatSnapshot(player, jailData);
             saveJailData();
@@ -615,7 +627,7 @@ public class JailMod implements ModInitializer {
 
         if (!player.getAbilities().invulnerable) {
             player.getAbilities().invulnerable = true;
-            player.sendAbilitiesUpdate();
+            player.onUpdateAbilities();
         }
 
         float targetHealth = jailData.savedHealth;
@@ -624,25 +636,25 @@ public class JailMod implements ModInitializer {
         }
         player.setHealth(targetHealth);
 
-        var hunger = player.getHungerManager();
+        var hunger = player.getFoodData();
         hunger.setFoodLevel(jailData.savedFoodLevel);
-        hunger.setSaturationLevel(jailData.savedSaturationLevel);
+        hunger.setSaturation(jailData.savedSaturationLevel);
 
-        player.setAir(jailData.savedAir);
+        player.setAirSupply(jailData.savedAir);
         player.setAbsorptionAmount(jailData.savedAbsorption);
 
         player.experienceLevel = jailData.savedXpLevel;
         player.experienceProgress = jailData.savedXpProgress;
         player.totalExperience = jailData.savedTotalXp;
 
-        if (player.getFireTicks() != 0) {
-            player.setFireTicks(0);
+        if (player.getRemainingFireTicks() != 0) {
+            player.setRemainingFireTicks(0);
         }
 
         applyFrozenEffects(player, jailData);
     }
 
-    private void restoreStatsAfterJail(ServerPlayerEntity player, JailData jailData) {
+    private void restoreStatsAfterJail(ServerPlayer player, JailData jailData) {
         if (!jailData.hasStatSnapshot) {
             return;
         }
@@ -653,11 +665,11 @@ public class JailMod implements ModInitializer {
         }
         player.setHealth(targetHealth);
 
-        var hunger = player.getHungerManager();
+        var hunger = player.getFoodData();
         hunger.setFoodLevel(jailData.savedFoodLevel);
-        hunger.setSaturationLevel(jailData.savedSaturationLevel);
+        hunger.setSaturation(jailData.savedSaturationLevel);
 
-        player.setAir(jailData.savedAir);
+        player.setAirSupply(jailData.savedAir);
         player.setAbsorptionAmount(jailData.savedAbsorption);
 
         player.experienceLevel = jailData.savedXpLevel;
@@ -665,37 +677,37 @@ public class JailMod implements ModInitializer {
         player.totalExperience = jailData.savedTotalXp;
 
         player.getAbilities().invulnerable = jailData.savedInvulnerable;
-        player.sendAbilitiesUpdate();
+        player.onUpdateAbilities();
 
         if (jailData.savedFireTicks > 0) {
-            player.setFireTicks(jailData.savedFireTicks);
-        } else if (player.getFireTicks() != 0) {
-            player.setFireTicks(0);
+            player.setRemainingFireTicks(jailData.savedFireTicks);
+        } else if (player.getRemainingFireTicks() != 0) {
+            player.setRemainingFireTicks(0);
         }
 
         restoreEffectsAfterJail(player, jailData);
     }
 
-    private void captureEffectSnapshot(ServerPlayerEntity player, JailData jailData) {
+    private void captureEffectSnapshot(ServerPlayer player, JailData jailData) {
         jailData.savedEffects = new ArrayList<>();
-        for (StatusEffectInstance effect : player.getStatusEffects()) {
-            RegistryEntry<StatusEffect> effectType = effect.getEffectType();
-            var effectKey = effectType.getKey().orElse(null);
+        for (MobEffectInstance effect : player.getActiveEffects()) {
+            Holder<MobEffect> effectType = effect.getEffect();
+            var effectKey = effectType.unwrapKey().orElse(null);
             if (effectKey == null) {
                 continue;
             }
-            StatusEffectSnapshot snapshot = new StatusEffectSnapshot();
-            snapshot.effectId = effectKey.getValue().toString();
+            MobEffectSnapshot snapshot = new MobEffectSnapshot();
+            snapshot.effectId = effectKey.identifier().toString();
             snapshot.duration = effect.getDuration();
             snapshot.amplifier = effect.getAmplifier();
             snapshot.ambient = effect.isAmbient();
-            snapshot.showParticles = effect.shouldShowParticles();
-            snapshot.showIcon = effect.shouldShowIcon();
+            snapshot.showParticles = effect.isVisible();
+            snapshot.showIcon = effect.showIcon();
             jailData.savedEffects.add(snapshot);
         }
     }
 
-    private void applyFrozenEffects(ServerPlayerEntity player, JailData jailData) {
+    private void applyFrozenEffects(ServerPlayer player, JailData jailData) {
         if (jailData.savedEffects == null) {
             captureEffectSnapshot(player, jailData);
             saveJailData();
@@ -706,81 +718,88 @@ public class JailMod implements ModInitializer {
         }
 
         Set<Identifier> snapshotIds = new HashSet<>();
-        for (StatusEffectSnapshot snapshot : jailData.savedEffects) {
+        for (MobEffectSnapshot snapshot : jailData.savedEffects) {
             if (snapshot.effectId != null) {
-                snapshotIds.add(Identifier.of(snapshot.effectId));
-            }
-        }
-
-        if (!player.getStatusEffects().isEmpty()) {
-            List<StatusEffectInstance> currentEffects = new ArrayList<>(player.getStatusEffects());
-            for (StatusEffectInstance current : currentEffects) {
-                RegistryEntry<StatusEffect> currentType = current.getEffectType();
-                var currentKey = currentType.getKey().orElse(null);
-                Identifier currentId = currentKey != null ? currentKey.getValue() : null;
-                if (currentId == null || !snapshotIds.contains(currentId)) {
-                    player.removeStatusEffect(currentType);
+                Identifier snapshotId = Identifier.tryParse(snapshot.effectId);
+                if (snapshotId != null) {
+                    snapshotIds.add(snapshotId);
                 }
             }
         }
 
-        for (StatusEffectSnapshot snapshot : jailData.savedEffects) {
+        if (!player.getActiveEffects().isEmpty()) {
+            List<MobEffectInstance> currentEffects = new ArrayList<>(player.getActiveEffects());
+            for (MobEffectInstance current : currentEffects) {
+                Holder<MobEffect> currentType = current.getEffect();
+                var currentKey = currentType.unwrapKey().orElse(null);
+                Identifier currentId = currentKey != null ? currentKey.identifier() : null;
+                if (currentId == null || !snapshotIds.contains(currentId)) {
+                    player.removeEffect(currentType);
+                }
+            }
+        }
+
+        for (MobEffectSnapshot snapshot : jailData.savedEffects) {
             if (snapshot.effectId == null) {
                 continue;
             }
-            RegistryEntry<StatusEffect> statusEffect = Registries.STATUS_EFFECT
-                    .getEntry(Identifier.of(snapshot.effectId))
-                    .orElse(null);
+            Identifier effectId = Identifier.tryParse(snapshot.effectId);
+            if (effectId == null) {
+                continue;
+            }
+            Holder<MobEffect> statusEffect = BuiltInRegistries.MOB_EFFECT.get(effectId).orElse(null);
             if (statusEffect == null) {
                 continue;
             }
-            StatusEffectInstance instance = new StatusEffectInstance(statusEffect, snapshot.duration,
+            MobEffectInstance instance = new MobEffectInstance(statusEffect, snapshot.duration,
                     snapshot.amplifier, snapshot.ambient, snapshot.showParticles, snapshot.showIcon);
-            player.addStatusEffect(instance);
+            player.addEffect(instance);
         }
     }
 
-    private void restoreEffectsAfterJail(ServerPlayerEntity player, JailData jailData) {
+    private void restoreEffectsAfterJail(ServerPlayer player, JailData jailData) {
         if (jailData.savedEffects == null) {
             return;
         }
 
-        player.clearStatusEffects();
-        for (StatusEffectSnapshot snapshot : jailData.savedEffects) {
+        player.removeAllEffects();
+        for (MobEffectSnapshot snapshot : jailData.savedEffects) {
             if (snapshot.effectId == null) {
                 continue;
             }
-            RegistryEntry<StatusEffect> statusEffect = Registries.STATUS_EFFECT
-                    .getEntry(Identifier.of(snapshot.effectId))
-                    .orElse(null);
+            Identifier effectId = Identifier.tryParse(snapshot.effectId);
+            if (effectId == null) {
+                continue;
+            }
+            Holder<MobEffect> statusEffect = BuiltInRegistries.MOB_EFFECT.get(effectId).orElse(null);
             if (statusEffect == null) {
                 continue;
             }
-            StatusEffectInstance instance = new StatusEffectInstance(statusEffect, snapshot.duration,
+            MobEffectInstance instance = new MobEffectInstance(statusEffect, snapshot.duration,
                     snapshot.amplifier, snapshot.ambient, snapshot.showParticles, snapshot.showIcon);
-            player.addStatusEffect(instance);
+            player.addEffect(instance);
         }
     }
 
-    private void sendTimeAddedMessages(ServerPlayerEntity player, JailData jailData, int addedSeconds) {
+    private void sendTimeAddedMessages(ServerPlayer player, JailData jailData, int addedSeconds) {
         int remainingSeconds = Math.max(0, jailData.remainingTicks / 20);
         String messageToPlayer = languageStrings.get("jail_time_added_player")
                 .replace("{added}", String.valueOf(addedSeconds))
                 .replace("{time}", String.valueOf(remainingSeconds))
                 .replace("{reason}", jailData.reason);
-        player.sendMessage(Text.of(messageToPlayer), false);
+        player.sendSystemMessage(Component.literal(messageToPlayer), false);
 
         String broadcastMessage = languageStrings.get("jail_time_added_broadcast")
                 .replace("{player}", player.getName().getString())
                 .replace("{added}", String.valueOf(addedSeconds))
                 .replace("{time}", String.valueOf(remainingSeconds))
                 .replace("{reason}", jailData.reason);
-        serverInstance.getPlayerManager().broadcast(Text.of(broadcastMessage), false);
+        serverInstance.getPlayerList().broadcastSystemMessage(Component.literal(broadcastMessage), false);
     }
 
     // [Rest of file is identical]
     private void releasePlayer(UUID playerUUID) {
-        ServerPlayerEntity player = serverInstance.getPlayerManager().getPlayer(playerUUID);
+        ServerPlayer player = serverInstance.getPlayerList().getPlayer(playerUUID);
         if (player != null) {
             unjailPlayer(player, false, "system");
         }
@@ -1236,3 +1255,5 @@ public class JailMod implements ModInitializer {
     }
 
 }
+
+
