@@ -38,6 +38,12 @@ jobs:
       - name: List Build Outputs
         run: ls -la build/libs
 
+      - name: Read Minecraft version from gradle.properties
+        id: mc
+        run: |
+          mc_version=$(grep '^minecraft_version=' gradle.properties | cut -d'=' -f2 | tr -d ' ')
+          echo "version=$mc_version" >> "$GITHUB_OUTPUT"
+
       - name: Locate Release Jar
         id: jar
         run: |
@@ -57,7 +63,7 @@ jobs:
           path: ${{ steps.jar.outputs.jar_path }}
           if-no-files-found: error
 
-      - name: Upload Jar To Release
+      - name: Upload Jar To GitHub Release
         if: github.event_name == 'release' || startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
@@ -65,3 +71,24 @@ jobs:
           name: ${{ github.event.release.name || github.ref_name }}
           files: ${{ steps.jar.outputs.jar_path }}
           fail_on_unmatched_files: true
+
+      - name: Publish to Modrinth
+        if: github.event_name == 'release' || startsWith(github.ref, 'refs/tags/')
+        uses: cloudnode-pro/modrinth-publish@v2
+        with:
+          token: ${{ secrets.MODRINTH_TOKEN }}
+          project: ZJf231gD
+          name: ${{ github.event.release.name || github.ref_name }}
+          version: ${{ github.event.release.tag_name || github.ref_name }}
+          changelog: ${{ github.event.release.body || '' }}
+          loaders: fabric
+          game-versions: ${{ steps.mc.outputs.version }}
+          files: ${{ steps.jar.outputs.jar_path }}
+          dependencies: |-
+            [{
+              "project_id": "P7dR8mSH",
+              "dependency_type": "required"
+            },{
+              "project_id": "Wpqg0ciI",
+              "dependency_type": "optional"
+            }]
