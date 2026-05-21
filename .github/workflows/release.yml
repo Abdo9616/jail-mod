@@ -1,21 +1,43 @@
-name: Build And Upload Release Jar
+name: Build And Publish Release
 
 on:
   release:
     types:
       - published
-      - prereleased
-      - released
-  push:
-    tags:
-      - "v*"
   workflow_dispatch:
+    inputs:
+      tag:
+        description: "Version tag (e.g., v2.9+26.1)"
+        required: true
+        type: string
+      name:
+        description: "Release name"
+        required: true
+        type: string
+      body:
+        description: "Changelog / release notes"
+        required: false
+        type: string
+        default: ""
+      game_versions:
+        description: "Minecraft versions on Modrinth/CurseForge"
+        required: true
+        default: "26.1"
+        type: choice
+        options:
+          - "26.1"
+          - "26.1.x"
+      prerelease:
+        description: "Mark as prerelease?"
+        required: true
+        default: false
+        type: boolean
 
 permissions:
   contents: write
 
 jobs:
-  build-and-upload:
+  build-and-publish:
     runs-on: ubuntu-latest
 
     steps:
@@ -63,32 +85,35 @@ jobs:
           path: ${{ steps.jar.outputs.jar_path }}
           if-no-files-found: error
 
-      - name: Upload Jar To GitHub Release
-        if: github.event_name == 'release' || startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@v2
+      - name: Publish to GitHub, Modrinth & CurseForge
+        uses: Kir-Antipov/mc-publish@v3.3
         with:
-          tag_name: ${{ github.event.release.tag_name || github.ref_name }}
-          name: ${{ github.event.release.name || github.ref_name }}
-          files: ${{ steps.jar.outputs.jar_path }}
-          fail_on_unmatched_files: true
+          # GitHub Releases
+          github-tag: ${{ github.event.release.tag_name || github.event.inputs.tag || github.ref_name }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          github-generate-changelog: false
+          github-prerelease: ${{ github.event.release.prerelease || github.event.inputs.prerelease || false }}
 
-      - name: Publish to Modrinth
-        if: github.event_name == 'release' || startsWith(github.ref, 'refs/tags/')
-        uses: cloudnode-pro/modrinth-publish@v2
-        with:
-          token: ${{ secrets.MODRINTH_TOKEN }}
-          project: ZJf231gD
-          name: ${{ github.event.release.name || github.ref_name }}
-          version: ${{ github.event.release.tag_name || github.ref_name }}
-          changelog: ${{ github.event.release.body || '' }}
+          # Modrinth
+          modrinth-id: ZJf231gD
+          modrinth-token: ${{ secrets.MODRINTH_TOKEN }}
+          modrinth-featured: true
+
+          # CurseForge
+          curseforge-id: 1549513
+          curseforge-token: ${{ secrets.CURSEFORGE_TOKEN }}
+          curseforge-name: ${{ steps.jar.outputs.jar_name }}
+
+          # Shared metadata
+          name: ${{ github.event.release.name || github.event.inputs.name || github.ref_name }}
+          version: ${{ github.event.release.tag_name || github.event.inputs.tag || github.ref_name }}
+          changelog: ${{ github.event.release.body || github.event.inputs.body || '' }}
           loaders: fabric
-          game-versions: ${{ steps.mc.outputs.version }}
+          game-versions: ${{ github.event.inputs.game_versions || steps.mc.outputs.version }}
+          java: 25
+
           files: ${{ steps.jar.outputs.jar_path }}
-          dependencies: |-
-            [{
-              "project_id": "P7dR8mSH",
-              "dependency_type": "required"
-            },{
-              "project_id": "Wpqg0ciI",
-              "dependency_type": "optional"
-            }]
+
+          dependencies: |
+            fabric@*(required){modrinth:P7dR8mSH}{curseforge:306612}
+            mod@*(optional){modrinth:Wpqg0ciI}

@@ -1,7 +1,12 @@
-## Readme
-
 Jail Mod (Fabric)
 =================
+[![Get it on Modrinth](https://img.shields.io/badge/Get%20it%20on-Modrinth-black?style=for-the-badge&logo=modrinth&logoColor=00AF5C)](https://modrinth.com/project/ZJf231gD)
+<a href="https://www.curseforge.com/minecraft/mc-mods/jail-logic-unofficial-update">
+  <img
+    alt="Get it on CurseForge"
+    src="https://img.shields.io/badge/Get%20it%20on-CurseForge-f16436?style=for-the-badge&logo=curseforge&logoColor=white"
+  />
+</a>
 
 The **Jail Mod** is a server-side mod that allows you to imprison players in a virtual prison, preventing them from interacting with the world until they are released. It is perfect for Minecraft servers where you want to impose temporary penalties or temporarily limit the movement of certain players.
 
