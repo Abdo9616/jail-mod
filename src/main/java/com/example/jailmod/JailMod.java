@@ -44,6 +44,7 @@ import net.minecraft.core.Holder;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.core.registries.Registries;
 import net.minecraft.network.chat.Component;
+import net.minecraft.network.chat.MutableComponent;
 import net.minecraft.resources.Identifier;
 import net.minecraft.resources.ResourceKey;
 import net.minecraft.server.MinecraftServer;
@@ -280,11 +281,11 @@ public class JailMod implements ModInitializer {
                                     String remainingTime = formatDuration(jailData.remainingTicks / 20L);
                                     String reason = jailData.reason == null ? "Unknown reason" : jailData.reason;
                                     String jailedBy = jailData.jailedBy == null ? "Unknown" : jailData.jailedBy;
-                                    String message = languageStrings.get("jail_info_message")
-                                            .replace("{time}", remainingTime)
-                                            .replace("{actor}", jailedBy)
-                                            .replace("{reason}", reason);
-                                    player.sendSystemMessage(Component.literal(message), false);
+                                    Component message = styledTemplate(languageStrings.get("jail_info_message"),
+                                            Map.of("time", remainingTime, "actor", jailedBy, "reason", reason),
+                                            Map.of("time", ChatFormatting.YELLOW, "actor", ChatFormatting.GOLD,
+                                                    "reason", ChatFormatting.YELLOW));
+                                    player.sendSystemMessage(message, false);
                                     return 1;
                                 } else {
                                     String notInJailMessage = languageStrings.get("not_in_jail_message");
@@ -342,17 +343,13 @@ public class JailMod implements ModInitializer {
             return 0;
         }
 
-        if (result.wasAlreadyJailed) {
-            context.getSource().sendSuccess(
-                    () -> Component.literal("Added " + formatDuration(result.addedSeconds) + " to "
-                            + player.getName().getString() + ". Remaining: " + formatDuration(result.totalSeconds) + "."),
-                    true);
-        } else {
-            context.getSource().sendSuccess(
-                    () -> Component.literal("Player " + player.getName().getString() + " jailed for "
-                            + formatDuration(durationSeconds) + "."),
-                    true);
-        }
+        String confirmation = result.wasAlreadyJailed
+                ? "Updated jail time for {player}."
+                : "Jailed {player}.";
+        context.getSource().sendSuccess(
+                () -> styledTemplate(confirmation, Map.of("player", player.getName().getString()),
+                        Map.of("player", ChatFormatting.RED)),
+                false);
         return 1;
     }
 
@@ -421,6 +418,42 @@ public class JailMod implements ModInitializer {
             parts.add(amount + " " + unit + (amount == 1 ? "" : "s"));
         }
         return remainingSeconds % secondsPerUnit;
+    }
+
+    private static Component styledTemplate(String template, Map<String, String> replacements,
+            Map<String, ChatFormatting> colors) {
+        MutableComponent message = Component.empty();
+        int cursor = 0;
+        while (cursor < template.length()) {
+            int placeholderStart = template.indexOf('{', cursor);
+            if (placeholderStart < 0) {
+                message.append(Component.literal(template.substring(cursor)).withStyle(ChatFormatting.WHITE));
+                break;
+            }
+
+            int placeholderEnd = template.indexOf('}', placeholderStart + 1);
+            if (placeholderEnd < 0) {
+                message.append(Component.literal(template.substring(cursor)).withStyle(ChatFormatting.WHITE));
+                break;
+            }
+
+            if (placeholderStart > cursor) {
+                message.append(Component.literal(template.substring(cursor, placeholderStart))
+                        .withStyle(ChatFormatting.WHITE));
+            }
+
+            String placeholder = template.substring(placeholderStart + 1, placeholderEnd);
+            String replacement = replacements.get(placeholder);
+            if (replacement == null) {
+                message.append(Component.literal(template.substring(placeholderStart, placeholderEnd + 1))
+                        .withStyle(ChatFormatting.WHITE));
+            } else {
+                message.append(Component.literal(replacement)
+                        .withStyle(colors.getOrDefault(placeholder, ChatFormatting.WHITE)));
+            }
+            cursor = placeholderEnd + 1;
+        }
+        return message;
     }
 
     private static boolean hasAdminPermission(CommandSourceStack source) {
@@ -599,16 +632,20 @@ public class JailMod implements ModInitializer {
         // player.setSpawnPoint(new ServerPlayer.Respawn(new
         // SpawnPoint(world.getRegistryKey(), jailPos, 0.0f, true), true), true);
 
-        String messageToPlayer = languageStrings.get("jail_player")
-                .replace("{time}", formatDuration(jailData.remainingTicks / 20L))
-                .replace("{reason}", jailData.reason == null ? "Unknown reason" : jailData.reason);
-        player.sendSystemMessage(Component.literal(messageToPlayer), false);
+        String reason = jailData.reason == null ? "Unknown reason" : jailData.reason;
+        String jailedBy = jailData.jailedBy == null ? "Unknown" : jailData.jailedBy;
+        String remainingTime = formatDuration(jailData.remainingTicks / 20L);
+        Component messageToPlayer = styledTemplate(languageStrings.get("jail_player"),
+                Map.of("time", remainingTime, "reason", reason, "actor", jailedBy),
+                Map.of("time", ChatFormatting.YELLOW, "reason", ChatFormatting.YELLOW, "actor", ChatFormatting.GOLD));
+        player.sendSystemMessage(messageToPlayer, false);
 
-        String jailMessage = languageStrings.get("jail_broadcast")
-                .replace("{player}", player.getName().getString())
-                .replace("{time}", formatDuration(jailData.remainingTicks / 20L))
-                .replace("{reason}", jailData.reason == null ? "Unknown reason" : jailData.reason);
-        serverInstance.getPlayerList().broadcastSystemMessage(Component.literal(jailMessage), false);
+        Component jailMessage = styledTemplate(languageStrings.get("jail_broadcast"),
+                Map.of("player", player.getName().getString(), "actor", jailedBy, "time", remainingTime,
+                        "reason", reason),
+                Map.of("player", ChatFormatting.RED, "actor", ChatFormatting.GOLD, "time", ChatFormatting.YELLOW,
+                        "reason", ChatFormatting.YELLOW));
+        serverInstance.getPlayerList().broadcastSystemMessage(jailMessage, false);
     }
 
     private void unjailPlayer(ServerPlayer player, boolean isManual, String actorName) {
@@ -865,18 +902,21 @@ public class JailMod implements ModInitializer {
 
     private void sendTimeAddedMessages(ServerPlayer player, JailData jailData, long addedSeconds) {
         long remainingSeconds = Math.max(0L, jailData.remainingTicks / 20);
-        String messageToPlayer = languageStrings.get("jail_time_added_player")
-                .replace("{added}", formatDuration(addedSeconds))
-                .replace("{time}", formatDuration(remainingSeconds))
-                .replace("{reason}", jailData.reason == null ? "Unknown reason" : jailData.reason);
-        player.sendSystemMessage(Component.literal(messageToPlayer), false);
+        String reason = jailData.reason == null ? "Unknown reason" : jailData.reason;
+        String jailedBy = jailData.jailedBy == null ? "Unknown" : jailData.jailedBy;
+        Component messageToPlayer = styledTemplate(languageStrings.get("jail_time_added_player"),
+                Map.of("added", formatDuration(addedSeconds), "time", formatDuration(remainingSeconds),
+                        "reason", reason, "actor", jailedBy),
+                Map.of("added", ChatFormatting.YELLOW, "time", ChatFormatting.YELLOW,
+                        "reason", ChatFormatting.YELLOW, "actor", ChatFormatting.GOLD));
+        player.sendSystemMessage(messageToPlayer, false);
 
-        String broadcastMessage = languageStrings.get("jail_time_added_broadcast")
-                .replace("{player}", player.getName().getString())
-                .replace("{added}", formatDuration(addedSeconds))
-                .replace("{time}", formatDuration(remainingSeconds))
-                .replace("{reason}", jailData.reason == null ? "Unknown reason" : jailData.reason);
-        serverInstance.getPlayerList().broadcastSystemMessage(Component.literal(broadcastMessage), false);
+        Component broadcastMessage = styledTemplate(languageStrings.get("jail_time_added_broadcast"),
+                Map.of("player", player.getName().getString(), "added", formatDuration(addedSeconds),
+                        "time", formatDuration(remainingSeconds), "reason", reason, "actor", jailedBy),
+                Map.of("player", ChatFormatting.RED, "added", ChatFormatting.YELLOW, "time", ChatFormatting.YELLOW,
+                        "reason", ChatFormatting.YELLOW, "actor", ChatFormatting.GOLD));
+        serverInstance.getPlayerList().broadcastSystemMessage(broadcastMessage, false);
     }
 
     // [Rest of file is identical]
@@ -1032,8 +1072,10 @@ public class JailMod implements ModInitializer {
 
     private boolean ensureLanguageDefaults() {
         boolean updated = migrateDurationLanguageTemplates();
-        updated |= ensureLanguageKey("jail_player", "You have been jailed for {time}! Reason: {reason}");
-        updated |= ensureLanguageKey("jail_broadcast", "{player} has been jailed for {time}. Reason: {reason}");
+        updated |= ensureLanguageKey("jail_player",
+                "You have been jailed by {actor} for {time}! Reason: {reason}");
+        updated |= ensureLanguageKey("jail_broadcast",
+                "Player: {player} has been jailed by {actor}! Reason: {reason}. Expires in {time}");
         updated |= ensureLanguageKey("unjail_player_manual", "You have been manually released from jail!");
         updated |= ensureLanguageKey("unjail_broadcast_manual", "{player} has been manually released from jail!");
         updated |= ensureLanguageKey("unjail_player_auto", "You have been released after serving your sentence.");
@@ -1047,9 +1089,9 @@ public class JailMod implements ModInitializer {
         updated |= ensureLanguageKey("jail_info_message", jailInfoDefault);
         updated |= ensureLanguageKey("not_in_jail_message", "You are not in jail!");
         updated |= ensureLanguageKey("jail_time_added_player",
-                "Your jail time has been extended by {added}. Remaining: {time}. Reason: {reason}");
+                "Your jail time has been extended by {actor}. Added {added}. Remaining: {time}. Reason: {reason}");
         updated |= ensureLanguageKey("jail_time_added_broadcast",
-                "{player}'s jail time has been extended by {added}. Remaining: {time}. Reason: {reason}");
+                "{player}'s jail time has been extended by {actor}. Added {added}. Remaining: {time}. Reason: {reason}");
         return updated;
     }
 
@@ -1057,19 +1099,31 @@ public class JailMod implements ModInitializer {
         boolean updated = false;
         updated |= migrateLanguageDefault("jail_player",
                 "You have been jailed for {time} seconds! Reason: {reason}",
-                "You have been jailed for {time}! Reason: {reason}");
+                "You have been jailed by {actor} for {time}! Reason: {reason}");
+        updated |= migrateLanguageDefault("jail_player",
+                "You have been jailed for {time}! Reason: {reason}",
+                "You have been jailed by {actor} for {time}! Reason: {reason}");
         updated |= migrateLanguageDefault("jail_broadcast",
                 "{player} has been jailed for {time} seconds. Reason: {reason}",
-                "{player} has been jailed for {time}. Reason: {reason}");
+                "Player: {player} has been jailed by {actor}! Reason: {reason}. Expires in {time}");
+        updated |= migrateLanguageDefault("jail_broadcast",
+                "{player} has been jailed for {time}. Reason: {reason}",
+                "Player: {player} has been jailed by {actor}! Reason: {reason}. Expires in {time}");
         updated |= migrateLanguageDefault("jail_info_message",
                 "You are in jail for another {time} seconds. Reason: {reason}.",
                 "You are jailed for {time} by {actor}. Reason: {reason}");
         updated |= migrateLanguageDefault("jail_time_added_player",
                 "Your jail time has been extended by {added} seconds. Remaining: {time} seconds. Reason: {reason}",
-                "Your jail time has been extended by {added}. Remaining: {time}. Reason: {reason}");
+                "Your jail time has been extended by {actor}. Added {added}. Remaining: {time}. Reason: {reason}");
+        updated |= migrateLanguageDefault("jail_time_added_player",
+                "Your jail time has been extended by {added}. Remaining: {time}. Reason: {reason}",
+                "Your jail time has been extended by {actor}. Added {added}. Remaining: {time}. Reason: {reason}");
         updated |= migrateLanguageDefault("jail_time_added_broadcast",
                 "{player}'s jail time has been extended by {added} seconds. Remaining: {time} seconds. Reason: {reason}",
-                "{player}'s jail time has been extended by {added}. Remaining: {time}. Reason: {reason}");
+                "{player}'s jail time has been extended by {actor}. Added {added}. Remaining: {time}. Reason: {reason}");
+        updated |= migrateLanguageDefault("jail_time_added_broadcast",
+                "{player}'s jail time has been extended by {added}. Remaining: {time}. Reason: {reason}",
+                "{player}'s jail time has been extended by {actor}. Added {added}. Remaining: {time}. Reason: {reason}");
 
         for (Map.Entry<String, String> entry : languageStrings.entrySet()) {
             String value = entry.getValue();

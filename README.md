@@ -156,10 +156,10 @@ This file controls Discord webhook message templates in a BanHammer-style format
 
 This file contains the messages that are displayed in-game, customizable to match the tone or style of the server. If the file does not exist, it is automatically generated with default messages. Here are some of the messages you can modify:
 
-*   **`jail_player`**: Message the player receives when they are jailed. Use `{time}` for the formatted duration and `{reason}` for the reason.
-    Example: `"You have been jailed for {time}! Reason: {reason}"`
-*   **`jail_broadcast`**: Message broadcast to all players on the server when a player is jailed.  
-    Example: `"{player} has been jailed for {time}. Reason: {reason}"`
+*   **`jail_player`**: Message the player receives when they are jailed. Placeholders are `{time}`, `{reason}`, and `{actor}`.
+    Example: `"You have been jailed by {actor} for {time}! Reason: {reason}"`
+*   **`jail_broadcast`**: BanHammer-style jail announcement. `{player}` is red, `{actor}` gold, `{reason}` and `{time}` yellow, and other text white.
+    Example: `"Player: {player} has been jailed by {actor}! Reason: {reason}. Expires in {time}"`
 *   **`unjail_player_manual`**: Message the player receives when they are manually released from jail.  
     Example: `"You have been manually released from jail!"`
 *   **`unjail_broadcast_manual`**: Message broadcast to all players on the server when a player is manually released from jail.  
@@ -186,8 +186,8 @@ This file contains the messages that are displayed in-game, customizable to matc
 
 Default language.txt example:
 ```
-    jail_player=You have been jailed for {time}! Reason: {reason}
-    jail_broadcast={player} has been jailed for {time}. Reason: {reason}
+    jail_player=You have been jailed by {actor} for {time}! Reason: {reason}
+    jail_broadcast=Player: {player} has been jailed by {actor}! Reason: {reason}. Expires in {time}
     unjail_player_manual=You have been manually released from jail!
     unjail_broadcast_manual={player} has been manually released from jail!
     unjail_player_auto=You have been released after serving your sentence.
@@ -197,6 +197,8 @@ Default language.txt example:
     bucket_use_denied=You cannot use lava or water buckets while in jail!
     item_use_denied=You cannot use items while in jail!
     block_break_denied=You cannot break blocks while in jail!
+    jail_time_added_player=Your jail time has been extended by {actor}. Added {added}. Remaining: {time}. Reason: {reason}
+    jail_time_added_broadcast={player}'s jail time has been extended by {actor}. Added {added}. Remaining: {time}. Reason: {reason}
     jail_info_message=You are jailed for {time} by {actor}. Reason: {reason}
     not_in_jail_message=You are not in jail!
 ```
