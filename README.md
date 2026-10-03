@@ -17,7 +17,7 @@ Key Features
 
 *   **Temporary Imprisonment**: You can imprison a player for a specific amount of time, blocking interactions with blocks, entities, and objects, such as buckets of lava or water.
 *   **Automatic or Manual Release**: The player is automatically released after the set time, or an admin can release them manually.
-*   **Imprisonment Reason**: When you imprison a player, you can specify a reason that will be communicated to the player.
+*   **Imprisonment Reason**: Add a reason to the command when needed. If omitted, the reason is `Unknown reason`.
 *   **Command to know the remaining time**: Imprisoned players can check the time remaining until their release.
 *   **Discord Webhook (optional)**: Sends jail and unjail events to a Discord webhook. If BanHammer is installed and Jail Mod webhook is empty, Jail Mod reuses BanHammer's webhook automatically.
 *   **BanHammer-style Discord templates**: Supports `config/jailmod/discord-messages.json` in BanHammer-like format with auto patching for new fields.
@@ -30,8 +30,8 @@ How to use:
 2.  Set the coordinates where you want the prisoner to spawn with the command `/jail set x y z`  (example `/jail set 0 60 0`)
     
 3.  Reload the configuration using `/jail reload` .
-4.  Send someone to jail with `/jail imprison playerexample 120 Griefing`.
-5.  If you don't want to wait for the prison time you set in seconds (example **120** seconds), you can release the player early with the command `/unjail playerexample`
+4.  Send someone to jail with a duration and optional reason, for example `/jail imprison playerexample 2m Griefing`.
+5.  If you don't want to wait for the sentence to end, release the player early with `/unjail playerexample`.
 
 
 Requirements
@@ -53,12 +53,13 @@ Installation
 Available Commands
 ------------------
 
-### 1. `/jail imprison player time reason`
+### 1. `/jail imprison player time [reason]`
 
-*   **Description**: Jails a player for a specified time in seconds, specifying the reason.
+*   **Description**: Jails a player for the specified duration. The reason is optional and defaults to `Unknown reason`.
 *   **Who can use it**: Only admins or server operators.
-*   **Syntax**:  `/jail imprison player_name time_in_seconds reason`
-*   **Example**: `/jail imprison Steve 300 Griefing`This command jails the player `Steve` for 300 seconds (5 minutes) with the reason "Griefing".
+*   **Syntax**:  `/jail imprison player_name duration [reason]`
+*   **Duration units**: `s`, `m`, `h`, `d`, `w`/`wk`, `mo`/`mth`, `y`/`yr`, plus plural `wks`/`yrs` and the full names `second(s)`, `minute(s)`, `hour(s)`, `day(s)`, `week(s)`, `month(s)`, and `year(s)`. A unit can be attached directly to the number, such as `10seconds`; a bare number means seconds. Unknown suffixes also fall back to seconds. Months are 30 days and years are 365 days.
+*   **Examples**: `/jail imprison Steve 300 Griefing`, `/jail imprison Steve 5m`, and `/jail imprison Steve 2years Breaking blocks`. The second example uses the default reason.
 
 ### 2. `/unjail player`
 
@@ -72,7 +73,7 @@ Available Commands
 
 *   **Description**: Allows incarcerated players to see the time remaining until release and the reason for their incarceration.
 *   **Who can use it**: Only jailed players.
-*   **Example**: `/jail info`This command will return a message similar to: "You are in jail for another 200 seconds. Reason: Griefing."
+*   **Example**: `/jail info`This command shows the remaining time using only nonzero units, plus who jailed the player and the reason. For example: "You are jailed for 10 minutes by Alex. Reason: Griefing."
 
 ### 4. `/jail reload`
 
@@ -155,10 +156,10 @@ This file controls Discord webhook message templates in a BanHammer-style format
 
 This file contains the messages that are displayed in-game, customizable to match the tone or style of the server. If the file does not exist, it is automatically generated with default messages. Here are some of the messages you can modify:
 
-*   **`jail_player`**: Message the player receives when they are jailed. Use the variables {time} for the duration and {reason} for the reason.  
-    Example: `"You have been jailed for {time} seconds! Reason: {reason}"`
+*   **`jail_player`**: Message the player receives when they are jailed. Use `{time}` for the formatted duration and `{reason}` for the reason.
+    Example: `"You have been jailed for {time}! Reason: {reason}"`
 *   **`jail_broadcast`**: Message broadcast to all players on the server when a player is jailed.  
-    Example: `"{player} has been jailed for {time} seconds. Reason: {reason}"`
+    Example: `"{player} has been jailed for {time}. Reason: {reason}"`
 *   **`unjail_player_manual`**: Message the player receives when they are manually released from jail.  
     Example: `"You have been manually released from jail!"`
 *   **`unjail_broadcast_manual`**: Message broadcast to all players on the server when a player is manually released from jail.  
@@ -177,15 +178,16 @@ This file contains the messages that are displayed in-game, customizable to matc
     Example: `"You cannot use items while in jail!"`
 *   **`block_break_denied`**: Message informing the player that they cannot break blocks while in jail.  
     Example: `"You cannot break blocks while in jail!"`
-*   **`jail_info_message`**: Message that shows the remaining time and the reason for the jail sentence when the player uses the `/jail info` command.  
-    Example: `"You are in jail for another {time} seconds. Reason: {reason}."`
+*   **`jail_time_added_player`** and **`jail_time_added_broadcast`**: Messages for added jail time. `{added}` and `{time}` are formatted durations, so do not add unit labels after them.
+*   **`jail_info_message`**: Message shown by `/jail info`. `{time}` includes only nonzero years, months, days, hours, minutes, and seconds; `{actor}` is the admin who jailed or most recently extended the sentence; `{reason}` is the jail reason.
+    Example: `"You are jailed for {time} by {actor}. Reason: {reason}"`
 *   **`not_in_jail_message`**: Message shown if a player is not in jail and tries to use `/jail info`.  
     Example: `"You are not in jail!"`
 
 Default language.txt example:
 ```
-    jail_player=You have been jailed for {time} seconds! Reason: {reason}
-    jail_broadcast={player} has been jailed for {time} seconds. Reason: {reason}
+    jail_player=You have been jailed for {time}! Reason: {reason}
+    jail_broadcast={player} has been jailed for {time}. Reason: {reason}
     unjail_player_manual=You have been manually released from jail!
     unjail_broadcast_manual={player} has been manually released from jail!
     unjail_player_auto=You have been released after serving your sentence.
@@ -195,12 +197,12 @@ Default language.txt example:
     bucket_use_denied=You cannot use lava or water buckets while in jail!
     item_use_denied=You cannot use items while in jail!
     block_break_denied=You cannot break blocks while in jail!
-    jail_info_message=You are in jail for another {time} seconds. Reason: {reason}.
+    jail_info_message=You are jailed for {time} by {actor}. Reason: {reason}
     not_in_jail_message=You are not in jail!
 ```
 ### Usage Tips
 
-Use the `/jail reload` command after changing configuration or language messages to apply the changes without having to restart the server. Always specify a clear reason for the jailing, so the player knows why they were jailed.
+Use the `/jail reload` command after changing configuration or language messages to apply the changes without having to restart the server. Add a clear reason when you want to tell the player why they were jailed. If you leave it out, the reason is `Unknown reason`.
 
 Usage Examples
 --------------

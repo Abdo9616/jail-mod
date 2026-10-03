@@ -10,6 +10,7 @@ import java.util.EnumSet;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
@@ -19,6 +20,8 @@ import com.google.gson.GsonBuilder;
 import com.google.gson.annotations.SerializedName;
 import com.mojang.brigadier.arguments.IntegerArgumentType;
 import com.mojang.brigadier.arguments.StringArgumentType;
+import com.mojang.brigadier.context.CommandContext;
+import com.mojang.brigadier.exceptions.CommandSyntaxException;
 import com.mojang.brigadier.suggestion.SuggestionProvider;
 
 import net.fabricmc.api.ModInitializer;
@@ -132,7 +135,8 @@ public class JailMod implements ModInitializer {
         public ResourceKey<Level> originalSpawnDimension;
         public boolean hadSpawnPoint;
         public String reason;
-        public int remainingTicks; // Remaining time in ticks (1 second = 20 ticks)
+        public String jailedBy;
+        public long remainingTicks; // Remaining time in ticks (1 second = 20 ticks)
 
         // Last location data
         public double lastX;
@@ -169,10 +173,10 @@ public class JailMod implements ModInitializer {
 
     private static class JailUpdateResult {
         public final boolean wasAlreadyJailed;
-        public final int addedSeconds;
-        public final int totalSeconds;
+        public final long addedSeconds;
+        public final long totalSeconds;
 
-        public JailUpdateResult(boolean wasAlreadyJailed, int addedSeconds, int totalSeconds) {
+        public JailUpdateResult(boolean wasAlreadyJailed, long addedSeconds, long totalSeconds) {
             this.wasAlreadyJailed = wasAlreadyJailed;
             this.addedSeconds = addedSeconds;
             this.totalSeconds = totalSeconds;
@@ -233,39 +237,11 @@ public class JailMod implements ModInitializer {
                     .then(Commands.literal("imprison")
                             .requires(source -> hasAdminPermission(source))
                             .then(Commands.argument("player", EntityArgument.player())
-                                    .then(Commands.argument("time", IntegerArgumentType.integer(1))
+                                    .then(Commands.argument("time", StringArgumentType.word())
+                                            .executes(context -> executeImprisonCommand(context, null))
                                             .then(Commands.argument("reason", StringArgumentType.greedyString())
-                                                    .executes(context -> {
-                                                        ServerPlayer player = EntityArgument
-                                                                .getPlayer(context, "player");
-                                                        int timeInSeconds = IntegerArgumentType.getInteger(context,
-                                                                "time");
-                                                        String reason = StringArgumentType.getString(context, "reason");
-
-                                                        if (player != null) {
-                                                            JailUpdateResult result = jailPlayer(player, timeInSeconds,
-                                                                    reason, context.getSource().getTextName(), true);
-                                                            if (result.wasAlreadyJailed) {
-                                                                context.getSource().sendSuccess(
-                                                                        () -> Component.literal("Added " + result.addedSeconds
-                                                                                + " seconds to " + player.getName()
-                                                                                        .getString()
-                                                                                + ". Remaining: "
-                                                                                + result.totalSeconds + " seconds."),
-                                                                        true);
-                                                            } else {
-                                                                context.getSource().sendSuccess(
-                                                                        () -> Component.literal("Player "
-                                                                                + player.getName().getString()
-                                                                                + " jailed for " + timeInSeconds
-                                                                                + " seconds."),
-                                                                        true);
-                                                            }
-                                                        } else {
-                                                            context.getSource().sendFailure(Component.literal("Player not found!"));
-                                                        }
-                                                        return 1;
-                                                    })))))
+                                                    .executes(context -> executeImprisonCommand(context,
+                                                            StringArgumentType.getString(context, "reason")))))))
                     .then(Commands.literal("reload")
                             .requires(source -> hasAdminPermission(source))
                             .executes(context -> {
@@ -301,10 +277,12 @@ public class JailMod implements ModInitializer {
                                 ServerPlayer player = context.getSource().getPlayer();
                                 if (player != null && isPlayerInJail(player)) {
                                     JailData jailData = jailedPlayers.get(player.getUUID());
-                                    int remainingSeconds = jailData.remainingTicks / 20;
-                                    String reason = jailData.reason;
+                                    String remainingTime = formatDuration(jailData.remainingTicks / 20L);
+                                    String reason = jailData.reason == null ? "Unknown reason" : jailData.reason;
+                                    String jailedBy = jailData.jailedBy == null ? "Unknown" : jailData.jailedBy;
                                     String message = languageStrings.get("jail_info_message")
-                                            .replace("{time}", String.valueOf(remainingSeconds))
+                                            .replace("{time}", remainingTime)
+                                            .replace("{actor}", jailedBy)
                                             .replace("{reason}", reason);
                                     player.sendSystemMessage(Component.literal(message), false);
                                     return 1;
@@ -341,6 +319,108 @@ public class JailMod implements ModInitializer {
         });
 
         ServerLifecycleEvents.SERVER_STOPPED.register(server -> saveJailData());
+    }
+
+    private int executeImprisonCommand(CommandContext<CommandSourceStack> context, String suppliedReason)
+            throws CommandSyntaxException {
+        ServerPlayer player = EntityArgument.getPlayer(context, "player");
+        String durationText = StringArgumentType.getString(context, "time");
+        long durationSeconds;
+        try {
+            durationSeconds = parseDurationSeconds(durationText);
+        } catch (IllegalArgumentException e) {
+            context.getSource().sendFailure(Component.literal(e.getMessage()));
+            return 0;
+        }
+
+        String reason = suppliedReason == null || suppliedReason.isBlank() ? "Unknown reason" : suppliedReason;
+        JailUpdateResult result;
+        try {
+            result = jailPlayer(player, durationSeconds, reason, context.getSource().getTextName(), true);
+        } catch (ArithmeticException e) {
+            context.getSource().sendFailure(Component.literal("That jail duration is too large."));
+            return 0;
+        }
+
+        if (result.wasAlreadyJailed) {
+            context.getSource().sendSuccess(
+                    () -> Component.literal("Added " + formatDuration(result.addedSeconds) + " to "
+                            + player.getName().getString() + ". Remaining: " + formatDuration(result.totalSeconds) + "."),
+                    true);
+        } else {
+            context.getSource().sendSuccess(
+                    () -> Component.literal("Player " + player.getName().getString() + " jailed for "
+                            + formatDuration(durationSeconds) + "."),
+                    true);
+        }
+        return 1;
+    }
+
+    private static long parseDurationSeconds(String input) {
+        String duration = input.toLowerCase(Locale.ROOT);
+        int unitStart = 0;
+        while (unitStart < duration.length() && Character.isDigit(duration.charAt(unitStart))) {
+            unitStart++;
+        }
+        if (unitStart == 0) {
+            throw invalidDuration(input);
+        }
+
+        long amount;
+        try {
+            amount = Long.parseLong(duration.substring(0, unitStart));
+        } catch (NumberFormatException e) {
+            throw invalidDuration(input);
+        }
+        if (amount <= 0) {
+            throw invalidDuration(input);
+        }
+
+        String unit = duration.substring(unitStart);
+        long secondsPerUnit = switch (unit) {
+            case "", "s", "second", "seconds" -> 1L;
+            case "m", "minute", "minutes" -> 60L;
+            case "h", "hour", "hours" -> 60L * 60L;
+            case "d", "day", "days" -> 24L * 60L * 60L;
+            case "mo", "mos", "mth", "mths", "month", "months" -> 30L * 24L * 60L * 60L;
+            case "w", "wk", "wks", "week", "weeks" -> 7L * 24L * 60L * 60L;
+            case "y", "yr", "yrs", "year", "years" -> 365L * 24L * 60L * 60L;
+            default -> 1L; // Unknown suffixes are treated as seconds.
+        };
+
+        try {
+            long seconds = Math.multiplyExact(amount, secondsPerUnit);
+            Math.multiplyExact(seconds, 20L); // Make sure the duration fits in stored ticks.
+            return seconds;
+        } catch (ArithmeticException e) {
+            throw invalidDuration(input);
+        }
+    }
+
+    private static IllegalArgumentException invalidDuration(String input) {
+        return new IllegalArgumentException("Invalid jail duration '" + input
+                + "'. Use a positive number followed by a supported unit; bare numbers mean seconds.");
+    }
+
+    static String formatDuration(long durationSeconds) {
+        long remainingSeconds = Math.max(0L, durationSeconds);
+        List<String> parts = new ArrayList<>();
+        remainingSeconds = appendDurationPart(parts, remainingSeconds, 365L * 24L * 60L * 60L, "year");
+        remainingSeconds = appendDurationPart(parts, remainingSeconds, 30L * 24L * 60L * 60L, "month");
+        remainingSeconds = appendDurationPart(parts, remainingSeconds, 24L * 60L * 60L, "day");
+        remainingSeconds = appendDurationPart(parts, remainingSeconds, 60L * 60L, "hour");
+        remainingSeconds = appendDurationPart(parts, remainingSeconds, 60L, "minute");
+        appendDurationPart(parts, remainingSeconds, 1L, "second");
+        return parts.isEmpty() ? "0 seconds" : String.join(" ", parts);
+    }
+
+    private static long appendDurationPart(List<String> parts, long remainingSeconds, long secondsPerUnit,
+            String unit) {
+        long amount = remainingSeconds / secondsPerUnit;
+        if (amount > 0) {
+            parts.add(amount + " " + unit + (amount == 1 ? "" : "s"));
+        }
+        return remainingSeconds % secondsPerUnit;
     }
 
     private static boolean hasAdminPermission(CommandSourceStack source) {
@@ -433,16 +513,17 @@ public class JailMod implements ModInitializer {
         return player != null && jailedPlayers.containsKey(player.getUUID());
     }
 
-    private JailUpdateResult jailPlayer(ServerPlayer player, int timeInSeconds, String reason, String actorName,
+    private JailUpdateResult jailPlayer(ServerPlayer player, long timeInSeconds, String reason, String actorName,
             boolean notifyWebhook) {
         if (actorName == null || actorName.isEmpty()) {
             actorName = "system";
         }
-        int addedTicks = timeInSeconds * 20; // Convert seconds to ticks
+        long addedTicks = Math.multiplyExact(timeInSeconds, 20L); // Convert seconds to ticks
         JailData existingData = jailedPlayers.get(player.getUUID());
         if (existingData != null) {
-            existingData.remainingTicks += addedTicks;
+            existingData.remainingTicks = Math.addExact(existingData.remainingTicks, addedTicks);
             existingData.reason = reason;
+            existingData.jailedBy = actorName;
 
             applyFrozenStats(player, existingData);
             sendTimeAddedMessages(player, existingData, timeInSeconds);
@@ -450,10 +531,10 @@ public class JailMod implements ModInitializer {
 
             if (notifyWebhook) {
                 discordNotifier.sendJailMessage(config, player.getName().getString(), reason,
-                        Math.max(0, existingData.remainingTicks / 20), actorName);
+                        Math.max(0L, existingData.remainingTicks / 20), actorName);
             }
 
-            return new JailUpdateResult(true, timeInSeconds, Math.max(0, existingData.remainingTicks / 20));
+            return new JailUpdateResult(true, timeInSeconds, Math.max(0L, existingData.remainingTicks / 20));
         }
 
         // Save the player's original spawn position
@@ -481,6 +562,7 @@ public class JailMod implements ModInitializer {
         jailData.originalSpawnDimension = originalSpawnDimension;
         jailData.hadSpawnPoint = hadSpawnPoint;
         jailData.reason = reason;
+        jailData.jailedBy = actorName;
         jailData.remainingTicks = addedTicks;
         jailData.lastX = lastX;
         jailData.lastY = lastY;
@@ -498,10 +580,10 @@ public class JailMod implements ModInitializer {
 
         if (notifyWebhook) {
             discordNotifier.sendJailMessage(config, player.getName().getString(), reason,
-                    Math.max(0, jailData.remainingTicks / 20), actorName);
+                    Math.max(0L, jailData.remainingTicks / 20), actorName);
         }
 
-        return new JailUpdateResult(false, 0, Math.max(0, jailData.remainingTicks / 20));
+        return new JailUpdateResult(false, 0, Math.max(0L, jailData.remainingTicks / 20));
     }
 
     private void jailPlayer(ServerPlayer player, JailData jailData) {
@@ -518,14 +600,14 @@ public class JailMod implements ModInitializer {
         // SpawnPoint(world.getRegistryKey(), jailPos, 0.0f, true), true), true);
 
         String messageToPlayer = languageStrings.get("jail_player")
-                .replace("{time}", String.valueOf(jailData.remainingTicks / 20))
-                .replace("{reason}", jailData.reason);
+                .replace("{time}", formatDuration(jailData.remainingTicks / 20L))
+                .replace("{reason}", jailData.reason == null ? "Unknown reason" : jailData.reason);
         player.sendSystemMessage(Component.literal(messageToPlayer), false);
 
         String jailMessage = languageStrings.get("jail_broadcast")
                 .replace("{player}", player.getName().getString())
-                .replace("{time}", String.valueOf(jailData.remainingTicks / 20))
-                .replace("{reason}", jailData.reason);
+                .replace("{time}", formatDuration(jailData.remainingTicks / 20L))
+                .replace("{reason}", jailData.reason == null ? "Unknown reason" : jailData.reason);
         serverInstance.getPlayerList().broadcastSystemMessage(Component.literal(jailMessage), false);
     }
 
@@ -781,19 +863,19 @@ public class JailMod implements ModInitializer {
         }
     }
 
-    private void sendTimeAddedMessages(ServerPlayer player, JailData jailData, int addedSeconds) {
-        int remainingSeconds = Math.max(0, jailData.remainingTicks / 20);
+    private void sendTimeAddedMessages(ServerPlayer player, JailData jailData, long addedSeconds) {
+        long remainingSeconds = Math.max(0L, jailData.remainingTicks / 20);
         String messageToPlayer = languageStrings.get("jail_time_added_player")
-                .replace("{added}", String.valueOf(addedSeconds))
-                .replace("{time}", String.valueOf(remainingSeconds))
-                .replace("{reason}", jailData.reason);
+                .replace("{added}", formatDuration(addedSeconds))
+                .replace("{time}", formatDuration(remainingSeconds))
+                .replace("{reason}", jailData.reason == null ? "Unknown reason" : jailData.reason);
         player.sendSystemMessage(Component.literal(messageToPlayer), false);
 
         String broadcastMessage = languageStrings.get("jail_time_added_broadcast")
                 .replace("{player}", player.getName().getString())
-                .replace("{added}", String.valueOf(addedSeconds))
-                .replace("{time}", String.valueOf(remainingSeconds))
-                .replace("{reason}", jailData.reason);
+                .replace("{added}", formatDuration(addedSeconds))
+                .replace("{time}", formatDuration(remainingSeconds))
+                .replace("{reason}", jailData.reason == null ? "Unknown reason" : jailData.reason);
         serverInstance.getPlayerList().broadcastSystemMessage(Component.literal(broadcastMessage), false);
     }
 
@@ -949,9 +1031,9 @@ public class JailMod implements ModInitializer {
     }
 
     private boolean ensureLanguageDefaults() {
-        boolean updated = false;
-        updated |= ensureLanguageKey("jail_player", "You have been jailed for {time} seconds! Reason: {reason}");
-        updated |= ensureLanguageKey("jail_broadcast", "{player} has been jailed for {time} seconds. Reason: {reason}");
+        boolean updated = migrateDurationLanguageTemplates();
+        updated |= ensureLanguageKey("jail_player", "You have been jailed for {time}! Reason: {reason}");
+        updated |= ensureLanguageKey("jail_broadcast", "{player} has been jailed for {time}. Reason: {reason}");
         updated |= ensureLanguageKey("unjail_player_manual", "You have been manually released from jail!");
         updated |= ensureLanguageKey("unjail_broadcast_manual", "{player} has been manually released from jail!");
         updated |= ensureLanguageKey("unjail_player_auto", "You have been released after serving your sentence.");
@@ -961,14 +1043,52 @@ public class JailMod implements ModInitializer {
         updated |= ensureLanguageKey("bucket_use_denied", "You cannot use lava or water buckets while in jail!");
         updated |= ensureLanguageKey("item_use_denied", "You cannot use items while in jail!");
         updated |= ensureLanguageKey("block_break_denied", "You cannot break blocks while in jail!");
-        updated |= ensureLanguageKey("jail_info_message",
-                "You are in jail for another {time} seconds. Reason: {reason}.");
+        String jailInfoDefault = "You are jailed for {time} by {actor}. Reason: {reason}";
+        updated |= ensureLanguageKey("jail_info_message", jailInfoDefault);
         updated |= ensureLanguageKey("not_in_jail_message", "You are not in jail!");
         updated |= ensureLanguageKey("jail_time_added_player",
-                "Your jail time has been extended by {added} seconds. Remaining: {time} seconds. Reason: {reason}");
+                "Your jail time has been extended by {added}. Remaining: {time}. Reason: {reason}");
         updated |= ensureLanguageKey("jail_time_added_broadcast",
-                "{player}'s jail time has been extended by {added} seconds. Remaining: {time} seconds. Reason: {reason}");
+                "{player}'s jail time has been extended by {added}. Remaining: {time}. Reason: {reason}");
         return updated;
+    }
+
+    private boolean migrateDurationLanguageTemplates() {
+        boolean updated = false;
+        updated |= migrateLanguageDefault("jail_player",
+                "You have been jailed for {time} seconds! Reason: {reason}",
+                "You have been jailed for {time}! Reason: {reason}");
+        updated |= migrateLanguageDefault("jail_broadcast",
+                "{player} has been jailed for {time} seconds. Reason: {reason}",
+                "{player} has been jailed for {time}. Reason: {reason}");
+        updated |= migrateLanguageDefault("jail_info_message",
+                "You are in jail for another {time} seconds. Reason: {reason}.",
+                "You are jailed for {time} by {actor}. Reason: {reason}");
+        updated |= migrateLanguageDefault("jail_time_added_player",
+                "Your jail time has been extended by {added} seconds. Remaining: {time} seconds. Reason: {reason}",
+                "Your jail time has been extended by {added}. Remaining: {time}. Reason: {reason}");
+        updated |= migrateLanguageDefault("jail_time_added_broadcast",
+                "{player}'s jail time has been extended by {added} seconds. Remaining: {time} seconds. Reason: {reason}",
+                "{player}'s jail time has been extended by {added}. Remaining: {time}. Reason: {reason}");
+
+        for (Map.Entry<String, String> entry : languageStrings.entrySet()) {
+            String value = entry.getValue();
+            String migratedValue = value.replaceAll(
+                    "(?i)(\\{(?:time|added)\\})\\s+(?:seconds?|second\\(s\\)|secs?)", "$1");
+            if (!migratedValue.equals(value)) {
+                entry.setValue(migratedValue);
+                updated = true;
+            }
+        }
+        return updated;
+    }
+
+    private boolean migrateLanguageDefault(String key, String previousDefault, String newDefault) {
+        if (previousDefault.equals(languageStrings.get(key))) {
+            languageStrings.put(key, newDefault);
+            return true;
+        }
+        return false;
     }
 
     private boolean ensureLanguageKey(String key, String value) {

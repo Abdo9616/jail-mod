@@ -36,7 +36,7 @@ public class DiscordNotifier {
         loadDiscordMessagesConfig();
     }
 
-    public void sendJailMessage(JailMod.Config config, String playerName, String reason, int durationSeconds, String actor) {
+    public void sendJailMessage(JailMod.Config config, String playerName, String reason, long durationSeconds, String actor) {
         if (config == null || !discordMessagesConfig.sendJailMessage) {
             return;
         }
@@ -44,7 +44,7 @@ public class DiscordNotifier {
         vars.put("banned", safe(playerName));
         vars.put("reason", safe(reason));
         vars.put("operator", safe(actor));
-        vars.put("expiration_time", durationSeconds + " second(s)");
+        vars.put("expiration_time", JailMod.formatDuration(durationSeconds));
         sendTemplate(config, discordMessagesConfig.jailMessage, vars);
     }
 
@@ -63,7 +63,7 @@ public class DiscordNotifier {
         vars.put("banned", safe(playerName));
         vars.put("reason", safe(reason));
         vars.put("operator", safe(actor));
-        vars.put("expiration_time", "0 second(s)");
+        vars.put("expiration_time", JailMod.formatDuration(0));
         MessageTemplate template = manual ? discordMessagesConfig.unjailMessage : discordMessagesConfig.autoUnjailMessage;
         forceOriginalReasonLabel(template);
         sendTemplate(config, template, vars);
