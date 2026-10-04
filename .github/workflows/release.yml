@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Version tag (e.g., v2.9+26.2)"
+        description: "Version tag (e.g., v3.2+26.3)"
         required: true
         type: string
       name:
@@ -98,6 +98,7 @@ jobs:
           modrinth-id: ZJf231gD
           modrinth-token: ${{ secrets.MODRINTH_TOKEN }}
           modrinth-featured: true
+          modrinth-environment: server
 
           # CurseForge
           curseforge-id: 1549513
