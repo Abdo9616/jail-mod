@@ -69,7 +69,7 @@ public class JailMod implements ModInitializer {
     private static final File CONFIG_FILE = new File("config/jailmod/config.json");
     private static final File TOML_CONFIG_FILE = new File("config/jailmod/config.toml");
     private static final File LANGUAGE_FILE = new File("config/jailmod/language.txt");
-    private static final File JAIL_DATA_FILE = new File("config/jailmod/jail_data.json");
+    private static final File DEFAULT_JAIL_DATA_FILE = new File("config/jailmod/jail_data.json");
     private static volatile Config config = new Config();
     private static volatile Config clientDefaultsConfig = new Config();
     private static volatile Config worldConfig;
@@ -77,6 +77,7 @@ public class JailMod implements ModInitializer {
     private static File activeTomlConfigFile = TOML_CONFIG_FILE;
     private static volatile File worldConfigFile;
     private static volatile File worldTomlConfigFile;
+    private static volatile File activeJailDataFile;
     private static Map<String, String> languageStrings = new HashMap<>();
     private static Map<UUID, JailData> jailedPlayers = new HashMap<>();
 
@@ -202,6 +203,11 @@ public class JailMod implements ModInitializer {
             if (!server.isDedicatedServer()) {
                 loadWorldConfig(server);
             }
+            activeJailDataFile = server.isDedicatedServer()
+                    ? DEFAULT_JAIL_DATA_FILE
+                    : server.getWorldPath(LevelResource.ROOT)
+                            .resolve("serverconfig/jailmod/jail_data.json").toFile();
+            loadJailData();
             Component message = Component.literal("[Jail-Mod] Loaded")
                     .withStyle(style -> style.withColor(0x00FF00).withBold(true));
             server.sendSystemMessage(message);
@@ -209,7 +215,6 @@ public class JailMod implements ModInitializer {
 
         loadConfig();
         loadLanguage();
-        loadJailData();
         discordNotifier = new DiscordNotifier();
         discordNotifier.reload();
 
@@ -337,18 +342,22 @@ public class JailMod implements ModInitializer {
         });
 
         ServerLifecycleEvents.SERVER_STOPPED.register(server -> {
-            saveJailData();
-            if (!server.isDedicatedServer() && serverInstance == server) {
-                if (worldConfigFile != null) {
-                    saveConfig();
+            if (serverInstance == server) {
+                saveJailData();
+                jailedPlayers.clear();
+                activeJailDataFile = null;
+                if (!server.isDedicatedServer()) {
+                    if (worldConfigFile != null) {
+                        saveConfig();
+                    }
+                    worldConfig = null;
+                    worldConfigFile = null;
+                    worldTomlConfigFile = null;
+                    activeConfigFile = CONFIG_FILE;
+                    activeTomlConfigFile = TOML_CONFIG_FILE;
+                    configFormat = TOML_CONFIG_FILE.exists() ? ConfigFormat.TOML : ConfigFormat.JSON;
+                    config = copyConfig(clientDefaultsConfig);
                 }
-                worldConfig = null;
-                worldConfigFile = null;
-                worldTomlConfigFile = null;
-                activeConfigFile = CONFIG_FILE;
-                activeTomlConfigFile = TOML_CONFIG_FILE;
-                configFormat = TOML_CONFIG_FILE.exists() ? ConfigFormat.TOML : ConfigFormat.JSON;
-                config = copyConfig(clientDefaultsConfig);
                 serverInstance = null;
             }
         });
@@ -776,18 +785,20 @@ public class JailMod implements ModInitializer {
                 String messageToPlayer = languageStrings.get("unjail_player_manual");
                 player.sendSystemMessage(Component.literal(messageToPlayer), false);
 
-                String broadcastMessage = languageStrings.get("unjail_broadcast_manual")
-                        .replace("{player}", player.getName().getString());
-                serverInstance.getPlayerList().broadcastSystemMessage(Component.literal(broadcastMessage), false);
+                Component broadcastMessage = styledTemplate(languageStrings.get("unjail_broadcast_manual"),
+                        Map.of("player", player.getName().getString()),
+                        Map.of("player", ChatFormatting.RED));
+                serverInstance.getPlayerList().broadcastSystemMessage(broadcastMessage, false);
                 discordNotifier.sendUnjailMessage(config, player.getName().getString(), jailData.reason, actorName,
                         true);
             } else {
                 String messageToPlayer = languageStrings.get("unjail_player_auto");
                 player.sendSystemMessage(Component.literal(messageToPlayer), false);
 
-                String broadcastMessage = languageStrings.get("unjail_broadcast_auto")
-                        .replace("{player}", player.getName().getString());
-                serverInstance.getPlayerList().broadcastSystemMessage(Component.literal(broadcastMessage), false);
+                Component broadcastMessage = styledTemplate(languageStrings.get("unjail_broadcast_auto"),
+                        Map.of("player", player.getName().getString()),
+                        Map.of("player", ChatFormatting.RED));
+                serverInstance.getPlayerList().broadcastSystemMessage(broadcastMessage, false);
                 discordNotifier.sendUnjailMessage(config, player.getName().getString(), jailData.reason, actorName,
                         false);
             }
@@ -1003,29 +1014,40 @@ public class JailMod implements ModInitializer {
 
     // Load jail status from file
     private void loadJailData() {
-        if (JAIL_DATA_FILE.exists()) {
-            try (FileReader reader = new FileReader(JAIL_DATA_FILE)) {
-                JailData[] loadedData = GSON.fromJson(reader, JailData[].class);
-                if (loadedData != null) {
-                    for (JailData data : loadedData) {
+        File dataFile = activeJailDataFile;
+        jailedPlayers.clear();
+        if (dataFile == null || !dataFile.exists()) {
+            return;
+        }
+
+        try (FileReader reader = new FileReader(dataFile)) {
+            JailData[] loadedData = GSON.fromJson(reader, JailData[].class);
+            if (loadedData != null) {
+                for (JailData data : loadedData) {
+                    if (data != null && data.playerUUID != null) {
                         jailedPlayers.put(data.playerUUID, data);
                     }
                 }
-                System.out.println("Jail status loaded.");
-            } catch (IOException e) {
-                e.printStackTrace();
             }
+            System.out.println("Jail status loaded: " + dataFile.getAbsolutePath());
+        } catch (IOException e) {
+            e.printStackTrace();
         }
     }
 
     // Save jail status to file
     private void saveJailData() {
-        if (!JAIL_DATA_FILE.getParentFile().exists()) {
-            JAIL_DATA_FILE.getParentFile().mkdirs();
+        File dataFile = activeJailDataFile;
+        if (dataFile == null) {
+            return;
         }
-        try (FileWriter writer = new FileWriter(JAIL_DATA_FILE)) {
+        File parent = dataFile.getParentFile();
+        if (parent != null && !parent.exists()) {
+            parent.mkdirs();
+        }
+        try (FileWriter writer = new FileWriter(dataFile)) {
             GSON.toJson(jailedPlayers.values().toArray(new JailData[0]), writer);
-            System.out.println("Jail status saved.");
+            System.out.println("Jail status saved: " + dataFile.getAbsolutePath());
         } catch (IOException e) {
             e.printStackTrace();
         }

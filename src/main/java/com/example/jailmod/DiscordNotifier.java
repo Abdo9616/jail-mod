@@ -28,11 +28,9 @@ public class DiscordNotifier {
     private static final int COLOR_ORANGE = 0xFEE75C;
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
 
-    private String cachedWebhookUrl = null;
     private DiscordMessagesConfig discordMessagesConfig = new DiscordMessagesConfig();
 
     public void reload() {
-        cachedWebhookUrl = null;
         loadDiscordMessagesConfig();
     }
 
@@ -154,19 +152,16 @@ public class DiscordNotifier {
     }
 
     private String resolveActiveWebhookUrl(JailMod.Config config) {
-        if (config.discord_webhook_url != null && !config.discord_webhook_url.isBlank()) {
-            cachedWebhookUrl = config.discord_webhook_url.trim();
-            return cachedWebhookUrl;
+        if (config == null) {
+            return "";
         }
-        if (cachedWebhookUrl != null) {
-            return cachedWebhookUrl;
+        if (config.discord_webhook_url != null && !config.discord_webhook_url.isBlank()) {
+            return config.discord_webhook_url.trim();
         }
         if (!config.useBanhammerWebhook) {
-            cachedWebhookUrl = "";
-            return cachedWebhookUrl;
+            return "";
         }
-        cachedWebhookUrl = readBanHammerWebhookUrl();
-        return cachedWebhookUrl;
+        return readBanHammerWebhookUrl();
     }
 
     private String readBanHammerWebhookUrl() {
