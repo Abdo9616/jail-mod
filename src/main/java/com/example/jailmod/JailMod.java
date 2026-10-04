@@ -184,18 +184,6 @@ public class JailMod implements ModInitializer {
         public boolean showIcon;
     }
 
-    private static class JailUpdateResult {
-        public final boolean wasAlreadyJailed;
-        public final long addedSeconds;
-        public final long totalSeconds;
-
-        public JailUpdateResult(boolean wasAlreadyJailed, long addedSeconds, long totalSeconds) {
-            this.wasAlreadyJailed = wasAlreadyJailed;
-            this.addedSeconds = addedSeconds;
-            this.totalSeconds = totalSeconds;
-        }
-    }
-
     @Override
     public void onInitialize() {
         ServerLifecycleEvents.SERVER_STARTED.register(server -> {
@@ -329,11 +317,8 @@ public class JailMod implements ModInitializer {
                                                 .withStyle(ChatFormatting.RED));
                                         return 0;
                                     }
-                                    unjailPlayer(player, true, context.getSource().getTextName());
-                                    context.getSource().sendSuccess(
-                                            () -> Component.literal("Player " + player.getName().getString()
-                                                    + " has been released from jail."),
-                                            true);
+                                    unjailPlayer(player, true, context.getSource().getTextName(),
+                                            context.getSource());
                                 } else {
                                     context.getSource().sendFailure(Component.literal("Player not found!"));
                                 }
@@ -376,21 +361,13 @@ public class JailMod implements ModInitializer {
         }
 
         String reason = suppliedReason == null || suppliedReason.isBlank() ? "Unknown reason" : suppliedReason;
-        JailUpdateResult result;
         try {
-            result = jailPlayer(player, durationSeconds, reason, context.getSource().getTextName(), true);
+            jailPlayer(player, durationSeconds, reason, context.getSource().getTextName(), true,
+                    context.getSource());
         } catch (ArithmeticException e) {
             context.getSource().sendFailure(Component.literal("That jail duration is too large."));
             return 0;
         }
-
-        String confirmation = result.wasAlreadyJailed
-                ? "Updated jail time for {player}."
-                : "Jailed {player}.";
-        context.getSource().sendSuccess(
-                () -> styledTemplate(confirmation, Map.of("player", player.getName().getString()),
-                        Map.of("player", ChatFormatting.RED)),
-                false);
         return 1;
     }
 
@@ -629,11 +606,14 @@ public class JailMod implements ModInitializer {
         saveConfigToFiles(worldConfig, worldConfigFile, worldTomlConfigFile);
     }
 
-    private JailUpdateResult jailPlayer(ServerPlayer player, long timeInSeconds, String reason, String actorName,
-            boolean notifyWebhook) {
+    private void jailPlayer(ServerPlayer player, long timeInSeconds, String reason, String actorName,
+            boolean notifyWebhook, CommandSourceStack commandSource) {
         if (actorName == null || actorName.isEmpty()) {
             actorName = "system";
         }
+        ServerPlayer actor = commandSource != null && commandSource.getEntity() instanceof ServerPlayer commandPlayer
+                ? commandPlayer
+                : null;
         long addedTicks = Math.multiplyExact(timeInSeconds, 20L); // Convert seconds to ticks
         JailData existingData = jailedPlayers.get(player.getUUID());
         if (existingData != null) {
@@ -642,15 +622,16 @@ public class JailMod implements ModInitializer {
             existingData.jailedBy = actorName;
 
             applyFrozenStats(player, existingData);
-            sendTimeAddedMessages(player, existingData, timeInSeconds);
             saveJailData();
+            sendJailConfirmation(commandSource, player, timeInSeconds, true);
+            sendTimeAddedMessages(player, existingData, timeInSeconds, actor);
 
             if (notifyWebhook) {
                 discordNotifier.sendJailMessage(config, player.getName().getString(), reason,
                         Math.max(0L, existingData.remainingTicks / 20), actorName);
             }
 
-            return new JailUpdateResult(true, timeInSeconds, Math.max(0L, existingData.remainingTicks / 20));
+            return;
         }
 
         // Save the player's original spawn position
@@ -690,7 +671,7 @@ public class JailMod implements ModInitializer {
 
         jailedPlayers.put(player.getUUID(), jailData);
 
-        jailPlayer(player, jailData);
+        jailPlayer(player, jailData, commandSource, actor, timeInSeconds);
 
         saveJailData();
 
@@ -699,10 +680,14 @@ public class JailMod implements ModInitializer {
                     Math.max(0L, jailData.remainingTicks / 20), actorName);
         }
 
-        return new JailUpdateResult(false, 0, Math.max(0L, jailData.remainingTicks / 20));
     }
 
     private void jailPlayer(ServerPlayer player, JailData jailData) {
+        jailPlayer(player, jailData, null, null, 0L);
+    }
+
+    private void jailPlayer(ServerPlayer player, JailData jailData, CommandSourceStack commandSource,
+            ServerPlayer actor, long addedSeconds) {
         ServerLevel world = (ServerLevel) player.level();
 
         BlockPos jailPos = new BlockPos(config.jail_position.x, config.jail_position.y, config.jail_position.z);
@@ -710,6 +695,8 @@ public class JailMod implements ModInitializer {
                 EnumSet.noneOf(Relative.class), player.getYRot(), player.getXRot(), false);
 
         applyFrozenStats(player, jailData);
+
+        sendJailConfirmation(commandSource, player, addedSeconds, false);
 
         // TODO: Fix setSpawnPoint
         // player.setSpawnPoint(new ServerPlayer.Respawn(new
@@ -728,10 +715,39 @@ public class JailMod implements ModInitializer {
                         "reason", reason),
                 Map.of("player", ChatFormatting.RED, "actor", ChatFormatting.GOLD, "time", ChatFormatting.YELLOW,
                         "reason", ChatFormatting.YELLOW));
-        serverInstance.getPlayerList().broadcastSystemMessage(jailMessage, false);
+        broadcastToOtherPlayers(jailMessage, player, actor);
+    }
+
+    private void sendJailConfirmation(CommandSourceStack commandSource, ServerPlayer jailedPlayer,
+            long addedSeconds, boolean wasAlreadyJailed) {
+        if (commandSource == null || commandSource.getEntity() == jailedPlayer) {
+            return;
+        }
+
+        String confirmation = wasAlreadyJailed
+                ? "Updated jail time for {player} by {time}."
+                : "Jailed {player} for {time}.";
+        commandSource.sendSuccess(
+                () -> styledTemplate(confirmation,
+                        Map.of("player", jailedPlayer.getName().getString(), "time", formatDuration(addedSeconds)),
+                        Map.of("player", ChatFormatting.RED, "time", ChatFormatting.YELLOW)),
+                false);
+    }
+
+    private void broadcastToOtherPlayers(Component message, ServerPlayer jailedPlayer, ServerPlayer actor) {
+        for (ServerPlayer recipient : serverInstance.getPlayerList().getPlayers()) {
+            if (recipient != jailedPlayer && recipient != actor) {
+                recipient.sendSystemMessage(message, false);
+            }
+        }
     }
 
     private void unjailPlayer(ServerPlayer player, boolean isManual, String actorName) {
+        unjailPlayer(player, isManual, actorName, null);
+    }
+
+    private void unjailPlayer(ServerPlayer player, boolean isManual, String actorName,
+            CommandSourceStack commandSource) {
         JailData jailData = jailedPlayers.remove(player.getUUID());
 
         if (jailData != null) {
@@ -780,15 +796,20 @@ public class JailMod implements ModInitializer {
             }
 
             restoreStatsAfterJail(player, jailData);
+            ServerPlayer actor = commandSource != null && commandSource.getEntity() instanceof ServerPlayer commandPlayer
+                    ? commandPlayer
+                    : null;
 
             if (isManual) {
+                sendUnjailConfirmation(commandSource, player);
+
                 String messageToPlayer = languageStrings.get("unjail_player_manual");
                 player.sendSystemMessage(Component.literal(messageToPlayer), false);
 
                 Component broadcastMessage = styledTemplate(languageStrings.get("unjail_broadcast_manual"),
                         Map.of("player", player.getName().getString()),
                         Map.of("player", ChatFormatting.RED));
-                serverInstance.getPlayerList().broadcastSystemMessage(broadcastMessage, false);
+                broadcastToOtherPlayers(broadcastMessage, player, actor);
                 discordNotifier.sendUnjailMessage(config, player.getName().getString(), jailData.reason, actorName,
                         true);
             } else {
@@ -798,7 +819,7 @@ public class JailMod implements ModInitializer {
                 Component broadcastMessage = styledTemplate(languageStrings.get("unjail_broadcast_auto"),
                         Map.of("player", player.getName().getString()),
                         Map.of("player", ChatFormatting.RED));
-                serverInstance.getPlayerList().broadcastSystemMessage(broadcastMessage, false);
+                broadcastToOtherPlayers(broadcastMessage, player, null);
                 discordNotifier.sendUnjailMessage(config, player.getName().getString(), jailData.reason, actorName,
                         false);
             }
@@ -985,7 +1006,8 @@ public class JailMod implements ModInitializer {
         }
     }
 
-    private void sendTimeAddedMessages(ServerPlayer player, JailData jailData, long addedSeconds) {
+    private void sendTimeAddedMessages(ServerPlayer player, JailData jailData, long addedSeconds,
+            ServerPlayer actor) {
         long remainingSeconds = Math.max(0L, jailData.remainingTicks / 20);
         String reason = jailData.reason == null ? "Unknown reason" : jailData.reason;
         String jailedBy = jailData.jailedBy == null ? "Unknown" : jailData.jailedBy;
@@ -1001,7 +1023,7 @@ public class JailMod implements ModInitializer {
                         "time", formatDuration(remainingSeconds), "reason", reason, "actor", jailedBy),
                 Map.of("player", ChatFormatting.RED, "added", ChatFormatting.YELLOW, "time", ChatFormatting.YELLOW,
                         "reason", ChatFormatting.YELLOW, "actor", ChatFormatting.GOLD));
-        serverInstance.getPlayerList().broadcastSystemMessage(broadcastMessage, false);
+        broadcastToOtherPlayers(broadcastMessage, player, actor);
     }
 
     // [Rest of file is identical]
@@ -1033,6 +1055,18 @@ public class JailMod implements ModInitializer {
         } catch (IOException e) {
             e.printStackTrace();
         }
+    }
+
+    private void sendUnjailConfirmation(CommandSourceStack commandSource, ServerPlayer releasedPlayer) {
+        if (commandSource == null || commandSource.getEntity() == releasedPlayer) {
+            return;
+        }
+
+        commandSource.sendSuccess(
+                () -> styledTemplate("Player {player} has been released from jail.",
+                        Map.of("player", releasedPlayer.getName().getString()),
+                        Map.of("player", ChatFormatting.RED)),
+                false);
     }
 
     // Save jail status to file
