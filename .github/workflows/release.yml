@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Version tag (e.g., v2.9+26.2)"
+        description: "Version tag (e.g., v3.2+26.3)"
         required: true
         type: string
       name:
@@ -22,11 +22,11 @@ on:
       game_versions:
         description: "Minecraft versions on Modrinth/CurseForge"
         required: true
-        default: "26.2"
+        default: "26.3"
         type: choice
         options:
-          - "26.2"
-          - "26.2.x"
+          - "26.3"
+          - "26.3.x"
       prerelease:
         description: "Mark as prerelease?"
         required: true
@@ -109,6 +109,7 @@ jobs:
           version: ${{ github.event.release.tag_name || github.event.inputs.tag || github.ref_name }}
           changelog: ${{ github.event.release.body || github.event.inputs.body || '' }}
           loaders: fabric
+          environment: "client | server"
           game-versions: ${{ github.event.inputs.game_versions || steps.mc.outputs.version }}
           java: 25
 
