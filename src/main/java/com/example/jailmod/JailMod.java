@@ -5,6 +5,7 @@ import java.io.File;
 import java.io.FileReader;
 import java.io.FileWriter;
 import java.io.IOException;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.EnumSet;
 import java.util.HashMap;
@@ -25,6 +26,7 @@ import com.mojang.brigadier.exceptions.CommandSyntaxException;
 import com.mojang.brigadier.suggestion.SuggestionProvider;
 
 import net.fabricmc.api.ModInitializer;
+import net.fabricmc.api.EnvType;
 import net.fabricmc.fabric.api.command.v2.CommandRegistrationCallback;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerLifecycleEvents;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerTickEvents;
@@ -35,6 +37,7 @@ import net.fabricmc.fabric.api.event.player.UseBlockCallback;
 import net.fabricmc.fabric.api.event.player.UseEntityCallback;
 import net.fabricmc.fabric.api.event.player.UseItemCallback;
 import net.fabricmc.fabric.api.networking.v1.ServerPlayConnectionEvents;
+import net.fabricmc.loader.api.FabricLoader;
 import net.minecraft.ChatFormatting;
 import net.minecraft.commands.CommandSourceStack;
 import net.minecraft.commands.Commands;
@@ -50,6 +53,7 @@ import net.minecraft.resources.ResourceKey;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.server.permissions.Permissions;
 import net.minecraft.world.InteractionResult;
 import net.minecraft.world.effect.MobEffect;
 import net.minecraft.world.effect.MobEffectInstance;
@@ -57,6 +61,7 @@ import net.minecraft.world.entity.Relative;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
 import net.minecraft.world.level.Level;
+import net.minecraft.world.level.storage.LevelResource;
 
 public class JailMod implements ModInitializer {
 
@@ -65,7 +70,13 @@ public class JailMod implements ModInitializer {
     private static final File TOML_CONFIG_FILE = new File("config/jailmod/config.toml");
     private static final File LANGUAGE_FILE = new File("config/jailmod/language.txt");
     private static final File JAIL_DATA_FILE = new File("config/jailmod/jail_data.json");
-    private static Config config;
+    private static volatile Config config = new Config();
+    private static volatile Config clientDefaultsConfig = new Config();
+    private static volatile Config worldConfig;
+    private static File activeConfigFile = CONFIG_FILE;
+    private static File activeTomlConfigFile = TOML_CONFIG_FILE;
+    private static volatile File worldConfigFile;
+    private static volatile File worldTomlConfigFile;
     private static Map<String, String> languageStrings = new HashMap<>();
     private static Map<UUID, JailData> jailedPlayers = new HashMap<>();
 
@@ -103,8 +114,8 @@ public class JailMod implements ModInitializer {
                 +
                 "- jail_position: The coordinates where players are held while in jail.\n" +
                 "- release_position: The fallback coordinates for releasing players if no other location (spawn/last) is used.\n" +
-                "- discord_webhook_url: Optional Discord webhook. If empty and BanHammer is installed, JailMod will reuse BanHammer's webhook.\n" +
-                "- use_banhammer_webhook: If true and discord_webhook_url is empty, JailMod may reuse BanHammer's webhook.";
+                "- discord_webhook_url: Optional Discord webhook. If empty, BanHammer's webhook can be reused when enabled in this world's settings.\n" +
+                "- use_banhammer_webhook: If true and discord_webhook_url is empty, JailMod may reuse BanHammer's server-side webhook.";
         public String admin_roles = "op"; // Comma-separated list of roles/tags that grant admin access. "op" refers to
                                           // operator status.
         public boolean use_previous_position = true; // Use spawn point as fallback
@@ -114,7 +125,7 @@ public class JailMod implements ModInitializer {
         public String discord_webhook_url = "";
         // Keep config key as use_banhammer_webhook while also accepting old sendJailMessage.
         @SerializedName(value = "use_banhammer_webhook", alternate = { "sendJailMessage" })
-        public boolean useBanhammerWebhook = true;
+        public boolean useBanhammerWebhook = false;
 
         public static class Position {
             public int x;
@@ -188,6 +199,9 @@ public class JailMod implements ModInitializer {
     public void onInitialize() {
         ServerLifecycleEvents.SERVER_STARTED.register(server -> {
             serverInstance = server;
+            if (!server.isDedicatedServer()) {
+                loadWorldConfig(server);
+            }
             Component message = Component.literal("[Jail-Mod] Loaded")
                     .withStyle(style -> style.withColor(0x00FF00).withBold(true));
             server.sendSystemMessage(message);
@@ -266,6 +280,9 @@ public class JailMod implements ModInitializer {
                                                         int z = IntegerArgumentType.getInteger(context, "z");
 
                                                         config.jail_position = new Config.Position(x, y, z);
+                                                        if (worldConfigFile != null) {
+                                                            worldConfig = copyConfig(config);
+                                                        }
                                                         saveConfig();
 
                                                         context.getSource()
@@ -319,7 +336,22 @@ public class JailMod implements ModInitializer {
                             })));
         });
 
-        ServerLifecycleEvents.SERVER_STOPPED.register(server -> saveJailData());
+        ServerLifecycleEvents.SERVER_STOPPED.register(server -> {
+            saveJailData();
+            if (!server.isDedicatedServer() && serverInstance == server) {
+                if (worldConfigFile != null) {
+                    saveConfig();
+                }
+                worldConfig = null;
+                worldConfigFile = null;
+                worldTomlConfigFile = null;
+                activeConfigFile = CONFIG_FILE;
+                activeTomlConfigFile = TOML_CONFIG_FILE;
+                configFormat = TOML_CONFIG_FILE.exists() ? ConfigFormat.TOML : ConfigFormat.JSON;
+                config = copyConfig(clientDefaultsConfig);
+                serverInstance = null;
+            }
+        });
     }
 
     private int executeImprisonCommand(CommandContext<CommandSourceStack> context, String suppliedReason)
@@ -458,6 +490,11 @@ public class JailMod implements ModInitializer {
 
     private static boolean hasAdminPermission(CommandSourceStack source) {
         if (source.getEntity() instanceof ServerPlayer player) {
+            // Includes singleplayer hosts and dedicated-server operators.
+            if (source.permissions().hasPermission(Permissions.COMMANDS_GAMEMASTER)) {
+                return true;
+            }
+
             // Very stable OP check: compare player name against the list of OP names
             // This bypasses mapping issues with hasPermissionLevel or isOperator
             String playerName = player.getName().getString();
@@ -544,6 +581,43 @@ public class JailMod implements ModInitializer {
 
     public static boolean isPlayerInJail(ServerPlayer player) {
         return player != null && jailedPlayers.containsKey(player.getUUID());
+    }
+
+    public static Config getConfig() {
+        return copyConfig(config);
+    }
+
+    public static Config getClientDefaultsConfig() {
+        return copyConfig(clientDefaultsConfig);
+    }
+
+    public static Config getWorldConfig() {
+        return worldConfig == null || worldConfigFile == null ? null : copyConfig(worldConfig);
+    }
+
+    public static boolean hasWorldConfigLoaded() {
+        return worldConfig != null && worldConfigFile != null;
+    }
+
+    public static void saveClientDefaultsFromScreen(Config updatedConfig) {
+        if (updatedConfig == null) {
+            return;
+        }
+        clientDefaultsConfig = copyConfig(updatedConfig);
+        if (isClientEnvironment()) {
+            clientDefaultsConfig.useBanhammerWebhook = false;
+        }
+        saveConfigToFiles(clientDefaultsConfig, CONFIG_FILE, TOML_CONFIG_FILE);
+    }
+
+    public static void saveWorldConfigFromScreen(Config updatedConfig) {
+        if (updatedConfig == null || worldConfigFile == null || worldTomlConfigFile == null) {
+            return;
+        }
+        worldConfig = copyConfig(updatedConfig);
+        config = copyConfig(worldConfig);
+        configFormat = worldTomlConfigFile.exists() ? ConfigFormat.TOML : ConfigFormat.JSON;
+        saveConfigToFiles(worldConfig, worldConfigFile, worldTomlConfigFile);
     }
 
     private JailUpdateResult jailPlayer(ServerPlayer player, long timeInSeconds, String reason, String actorName,
@@ -958,79 +1032,132 @@ public class JailMod implements ModInitializer {
     }
 
     private void loadConfig() {
-        // Create the config directory if it doesn't exist
-        if (!CONFIG_FILE.getParentFile().exists()) {
-            CONFIG_FILE.getParentFile().mkdirs();
+        Config defaults = worldConfigFile == null ? new Config() : clientDefaultsConfig;
+        loadConfigFromFiles(activeConfigFile, activeTomlConfigFile, defaults);
+        if (worldConfigFile == null) {
+            if (isClientEnvironment()) {
+                // BanHammer only runs on the server. Do not carry an old client-side toggle forward.
+                config.useBanhammerWebhook = false;
+                saveConfig();
+            }
+            clientDefaultsConfig = copyConfig(config);
+        } else {
+            worldConfig = copyConfig(config);
+        }
+    }
+
+    private void loadWorldConfig(MinecraftServer server) {
+        Path worldRoot = server.getWorldPath(LevelResource.ROOT);
+        worldConfigFile = worldRoot.resolve("serverconfig/jailmod/config.json").toFile();
+        worldTomlConfigFile = worldRoot.resolve("serverconfig/jailmod/config.toml").toFile();
+        loadConfigFromFiles(worldConfigFile, worldTomlConfigFile, clientDefaultsConfig);
+        worldConfig = copyConfig(config);
+        System.out.println("World configuration loaded: " + activeConfigFile.getAbsolutePath());
+    }
+
+    private void loadConfigFromFiles(File jsonFile, File tomlFile, Config defaults) {
+        activeConfigFile = jsonFile;
+        activeTomlConfigFile = tomlFile;
+        File parent = jsonFile.getParentFile();
+        if (parent != null && !parent.exists()) {
+            parent.mkdirs();
         }
 
-        if (TOML_CONFIG_FILE.exists()) {
+        Config defaultConfig = copyConfig(defaults);
+        if (tomlFile.exists()) {
             configFormat = ConfigFormat.TOML;
-            config = loadTomlConfig(TOML_CONFIG_FILE);
+            config = loadTomlConfig(tomlFile, defaultConfig);
             if (config == null) {
-                config = new Config();
+                config = defaultConfig;
             }
-            saveConfig(); // Save back to include new fields
-            System.out.println("Configuration loaded and patched: " + TOML_CONFIG_FILE.getAbsolutePath());
+            saveConfig();
+            System.out.println("Configuration loaded and patched: " + tomlFile.getAbsolutePath());
             return;
         }
 
         configFormat = ConfigFormat.JSON;
-
-        // If the config file exists, load it
-        if (CONFIG_FILE.exists()) {
-            try (FileReader reader = new FileReader(CONFIG_FILE)) {
-                StringBuilder jsonContent = new StringBuilder();
-                int i;
-                while ((i = reader.read()) != -1) {
-                    jsonContent.append((char) i);
-                }
-
-                // Load existing config
-                Config loadedConfig = GSON.fromJson(jsonContent.toString(), Config.class);
-                Config defaultConfig = new Config();
-
-                // Patch missing fields (simple manual merge for now to ensure reliability)
-                if (loadedConfig != null) {
-                    if (loadedConfig._config_guide == null)
-                        loadedConfig._config_guide = defaultConfig._config_guide;
-                    if (loadedConfig.release_position == null)
-                        loadedConfig.release_position = defaultConfig.release_position;
-                    if (loadedConfig.jail_position == null)
-                        loadedConfig.jail_position = defaultConfig.jail_position;
-                    // Note: primitives like booleans default to false if missing, which is tricky.
-                    // To handle primitives correctly without complex reflection, we check if the
-                    // key exists in raw JSON.
-                    if (!jsonContent.toString().contains("return_to_last_location")) {
-                        loadedConfig.return_to_last_location = defaultConfig.return_to_last_location;
-                    }
-                    if (!jsonContent.toString().contains("discord_webhook_url")) {
-                        loadedConfig.discord_webhook_url = defaultConfig.discord_webhook_url;
-                    }
-                    if (jsonContent.toString().contains("use_banhammer_webhook")) {
-                        loadedConfig.useBanhammerWebhook = extractBooleanFromJson(jsonContent.toString(),
-                                "use_banhammer_webhook", defaultConfig.useBanhammerWebhook);
-                    } else if (jsonContent.toString().contains("sendJailMessage")) {
-                        loadedConfig.useBanhammerWebhook = extractBooleanFromJson(jsonContent.toString(),
-                                "sendJailMessage", defaultConfig.useBanhammerWebhook);
-                    } else {
-                        loadedConfig.useBanhammerWebhook = defaultConfig.useBanhammerWebhook;
-                    }
-                } else {
-                    loadedConfig = defaultConfig;
-                }
-
-                config = loadedConfig;
-                saveConfig(); // Save back to include new fields
-                System.out.println("Configuration loaded and patched: " + CONFIG_FILE.getAbsolutePath());
-            } catch (IOException e) {
-                e.printStackTrace();
-            }
-        } else {
-            // If it doesn't exist, create the file with default values
-            config = new Config();
+        if (!jsonFile.exists()) {
+            config = defaultConfig;
             saveConfig();
-            System.out.println("Default config file created: " + CONFIG_FILE.getAbsolutePath());
+            System.out.println("Default config file created: " + jsonFile.getAbsolutePath());
+            return;
         }
+
+        try (FileReader reader = new FileReader(jsonFile)) {
+            StringBuilder jsonContent = new StringBuilder();
+            int i;
+            while ((i = reader.read()) != -1) {
+                jsonContent.append((char) i);
+            }
+
+            Config loadedConfig = GSON.fromJson(jsonContent.toString(), Config.class);
+            if (loadedConfig == null) {
+                loadedConfig = defaultConfig;
+            } else {
+                if (loadedConfig._config_guide == null) {
+                    loadedConfig._config_guide = defaultConfig._config_guide;
+                }
+                if (loadedConfig.admin_roles == null) {
+                    loadedConfig.admin_roles = defaultConfig.admin_roles;
+                }
+                if (loadedConfig.jail_position == null) {
+                    loadedConfig.jail_position = copyPosition(defaultConfig.jail_position);
+                }
+                if (loadedConfig.release_position == null) {
+                    loadedConfig.release_position = copyPosition(defaultConfig.release_position);
+                }
+                String json = jsonContent.toString();
+                if (!json.contains("use_previous_position")) {
+                    loadedConfig.use_previous_position = defaultConfig.use_previous_position;
+                }
+                if (!json.contains("return_to_last_location")) {
+                    loadedConfig.return_to_last_location = defaultConfig.return_to_last_location;
+                }
+                if (loadedConfig.discord_webhook_url == null) {
+                    loadedConfig.discord_webhook_url = defaultConfig.discord_webhook_url;
+                }
+                if (json.contains("use_banhammer_webhook")) {
+                    loadedConfig.useBanhammerWebhook = extractBooleanFromJson(json,
+                            "use_banhammer_webhook", defaultConfig.useBanhammerWebhook);
+                } else if (json.contains("sendJailMessage")) {
+                    loadedConfig.useBanhammerWebhook = extractBooleanFromJson(json,
+                            "sendJailMessage", defaultConfig.useBanhammerWebhook);
+                } else {
+                    loadedConfig.useBanhammerWebhook = defaultConfig.useBanhammerWebhook;
+                }
+            }
+
+            config = loadedConfig;
+            saveConfig();
+            System.out.println("Configuration loaded and patched: " + jsonFile.getAbsolutePath());
+        } catch (IOException e) {
+            e.printStackTrace();
+            config = defaultConfig;
+        }
+    }
+
+    private static boolean isClientEnvironment() {
+        return FabricLoader.getInstance().getEnvironmentType() == EnvType.CLIENT;
+    }
+
+    private static Config copyConfig(Config source) {
+        Config copy = new Config();
+        if (source == null) {
+            return copy;
+        }
+        copy._config_guide = source._config_guide;
+        copy.admin_roles = source.admin_roles;
+        copy.use_previous_position = source.use_previous_position;
+        copy.return_to_last_location = source.return_to_last_location;
+        copy.jail_position = copyPosition(source.jail_position);
+        copy.release_position = copyPosition(source.release_position);
+        copy.discord_webhook_url = source.discord_webhook_url;
+        copy.useBanhammerWebhook = source.useBanhammerWebhook;
+        return copy;
+    }
+
+    private static Config.Position copyPosition(Config.Position position) {
+        return position == null ? null : new Config.Position(position.x, position.y, position.z);
     }
 
     private void loadLanguage() {
@@ -1164,8 +1291,8 @@ public class JailMod implements ModInitializer {
         }
     }
 
-    private Config loadTomlConfig(File tomlFile) {
-        Config loadedConfig = new Config();
+    private Config loadTomlConfig(File tomlFile, Config defaults) {
+        Config loadedConfig = copyConfig(defaults);
         try (BufferedReader reader = new BufferedReader(new FileReader(tomlFile))) {
             String line;
             String currentSection = "";
@@ -1355,7 +1482,7 @@ public class JailMod implements ModInitializer {
         }
     }
 
-    private String escapeTomlString(String value) {
+    private static String escapeTomlString(String value) {
         if (value == null) {
             return "";
         }
@@ -1365,48 +1492,64 @@ public class JailMod implements ModInitializer {
                 .replace("\t", "\\t");
     }
 
-    private void saveTomlConfig() {
+    private static void saveTomlConfig(Config configToSave, File tomlFile) {
         Config defaultConfig = new Config();
-        if (config.release_position == null) {
-            config.release_position = defaultConfig.release_position;
+        if (configToSave.release_position == null) {
+            configToSave.release_position = defaultConfig.release_position;
         }
-        if (config.jail_position == null) {
-            config.jail_position = defaultConfig.jail_position;
+        if (configToSave.jail_position == null) {
+            configToSave.jail_position = defaultConfig.jail_position;
         }
 
-        try (FileWriter writer = new FileWriter(TOML_CONFIG_FILE)) {
-            writer.write("_config_guide = \"" + escapeTomlString(config._config_guide) + "\"\n");
-            writer.write("admin_roles = \"" + escapeTomlString(config.admin_roles) + "\"\n");
-            writer.write("use_previous_position = " + config.use_previous_position + "\n");
-            writer.write("return_to_last_location = " + config.return_to_last_location + "\n\n");
-            writer.write("discord_webhook_url = \"" + escapeTomlString(config.discord_webhook_url) + "\"\n\n");
-            writer.write("use_banhammer_webhook = " + config.useBanhammerWebhook + "\n\n");
+        File parent = tomlFile.getParentFile();
+        if (parent != null && !parent.exists()) {
+            parent.mkdirs();
+        }
+
+        try (FileWriter writer = new FileWriter(tomlFile)) {
+            writer.write("_config_guide = \"" + escapeTomlString(configToSave._config_guide) + "\"\n");
+            writer.write("admin_roles = \"" + escapeTomlString(configToSave.admin_roles) + "\"\n");
+            writer.write("use_previous_position = " + configToSave.use_previous_position + "\n");
+            writer.write("return_to_last_location = " + configToSave.return_to_last_location + "\n\n");
+            writer.write("discord_webhook_url = \"" + escapeTomlString(configToSave.discord_webhook_url) + "\"\n\n");
+            writer.write("use_banhammer_webhook = " + configToSave.useBanhammerWebhook + "\n\n");
 
             writer.write("[release_position]\n");
-            writer.write("x = " + config.release_position.x + "\n");
-            writer.write("y = " + config.release_position.y + "\n");
-            writer.write("z = " + config.release_position.z + "\n\n");
+            writer.write("x = " + configToSave.release_position.x + "\n");
+            writer.write("y = " + configToSave.release_position.y + "\n");
+            writer.write("z = " + configToSave.release_position.z + "\n\n");
 
             writer.write("[jail_position]\n");
-            writer.write("x = " + config.jail_position.x + "\n");
-            writer.write("y = " + config.jail_position.y + "\n");
-            writer.write("z = " + config.jail_position.z + "\n");
+            writer.write("x = " + configToSave.jail_position.x + "\n");
+            writer.write("y = " + configToSave.jail_position.y + "\n");
+            writer.write("z = " + configToSave.jail_position.z + "\n");
 
-            System.out.println("Configuration saved: " + TOML_CONFIG_FILE.getAbsolutePath());
+            System.out.println("Configuration saved: " + tomlFile.getAbsolutePath());
         } catch (IOException e) {
             e.printStackTrace();
         }
     }
 
-    private void saveConfig() {
-        if (configFormat == ConfigFormat.TOML) {
-            saveTomlConfig();
+    private static void saveConfig() {
+        saveConfigToFiles(config, activeConfigFile, activeTomlConfigFile);
+    }
+
+    private static void saveConfigToFiles(Config configToSave, File jsonFile, File tomlFile) {
+        ConfigFormat format = tomlFile.exists() ? ConfigFormat.TOML : ConfigFormat.JSON;
+        File targetFile = format == ConfigFormat.TOML ? tomlFile : jsonFile;
+        File parent = targetFile.getParentFile();
+        if (parent != null && !parent.exists()) {
+            parent.mkdirs();
+        }
+
+        if (format == ConfigFormat.TOML) {
+            saveTomlConfig(configToSave, tomlFile);
             return;
         }
 
-        try (FileWriter writer = new FileWriter(CONFIG_FILE)) {
-            GSON.toJson(config, writer);
-            System.out.println("Configuration saved: " + CONFIG_FILE.getAbsolutePath());
+        try (FileWriter writer = new FileWriter(jsonFile)) {
+            GSON.toJson(configToSave, writer);
+            System.out.println("Configuration saved: " + jsonFile.getAbsolutePath());
         } catch (IOException e) {
             e.printStackTrace();
         }

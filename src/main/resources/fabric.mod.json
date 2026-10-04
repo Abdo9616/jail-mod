@@ -3,21 +3,25 @@
 	"id": "jailmod",
 	"version": "${version}",
 	"name": "Jail Mod",
-	"description": "A server-side mod that allows administrators to jail players with time-based sentences and restrictions.",
+	"description": "A server-side (and singleplayer) mod that allows administrators to jail players with time-based sentences and restrictions.",
 	"authors": [
 		"n3mmos",
 		"Abdo9616"
 	],
 	"contact": {
-		"homepage": "https://github.com/Abdo9616/jail-mod",
-		"sources": "https://github.com/Cubolico/jail-mod"
+		"homepage": "https://modrinth.com/project/ZJf231gD",
+		"sources": "https://github.com/Abdo9616/jail-mod",
+		"issues": "https://github.com/Abdo9616/jail-mod/issues"
 	},
 	"license": "MIT",
 	"icon": "assets/jailmod/icon.png",
-	"environment": "server",
+	"environment": "*",
 	"entrypoints": {
 		"main": [
 			"com.example.jailmod.JailMod"
+		],
+		"modmenu": [
+			"com.example.jailmod.client.modmenu.JailModMenuIntegration"
 		]
 	},
 	"mixins": [
@@ -31,5 +35,19 @@
 	},
 	"suggests": {
 		"adminscope": "*"
+	},
+	"recommends": {
+		"modmenu": "*",
+		"cloth-config": "*",
+		"cloth-config2": "*"
+	},
+	"custom": {
+		"modmenu": {
+			 "links": {
+        "modmenu.modrinth": "https://modrinth.com/project/ZJf231gD",
+        "modmenu.curseforge": "https://www.curseforge.com/minecraft/mc-mods/jail-logic-unofficial-update"
+            },
+			"update_checker": true
+		}
 	}
 }
