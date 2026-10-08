@@ -7,6 +7,7 @@ import java.io.FileWriter;
 import java.io.IOException;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.EnumSet;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -21,6 +22,7 @@ import com.google.gson.GsonBuilder;
 import com.google.gson.annotations.SerializedName;
 import com.mojang.brigadier.arguments.IntegerArgumentType;
 import com.mojang.brigadier.arguments.StringArgumentType;
+import com.mojang.brigadier.builder.LiteralArgumentBuilder;
 import com.mojang.brigadier.context.CommandContext;
 import com.mojang.brigadier.exceptions.CommandSyntaxException;
 import com.mojang.brigadier.suggestion.SuggestionProvider;
@@ -109,6 +111,8 @@ public class JailMod implements ModInitializer {
         public String _config_guide = "JailMod Configuration Guide: \n" +
                 "- admin_roles: Comma-separated list of roles or tags that grant /jail access. Use 'op' to include server operators.\n"
                 +
+                "- allow_admin_role_set_jail_position: If true, players with a configured admin role can use /jail set. Operators can always use it.\n"
+                +
                 "- use_previous_position: If true, released players will be teleported to their original spawn point (if return_to_last_location is false or unavailable).\n"
                 +
                 "- return_to_last_location: If true, released players will be teleported back to the exact spot where they were jailed.\n"
@@ -119,6 +123,7 @@ public class JailMod implements ModInitializer {
                 "- use_banhammer_webhook: If true and discord_webhook_url is empty, JailMod may reuse BanHammer's server-side webhook.";
         public String admin_roles = "op"; // Comma-separated list of roles/tags that grant admin access. "op" refers to
                                           // operator status.
+        public boolean allow_admin_role_set_jail_position = false;
         public boolean use_previous_position = true; // Use spawn point as fallback
         public boolean return_to_last_location = true; // Return to the exact spot where jailed
         public Position release_position = new Position(100, 65, 100);
@@ -144,6 +149,7 @@ public class JailMod implements ModInitializer {
     // Class to store jailed players with release time in ticks
     private static class JailData {
         public UUID playerUUID;
+        public String playerName;
         public BlockPos originalSpawnPos;
         public ResourceKey<Level> originalSpawnDimension;
         public boolean hadSpawnPoint;
@@ -232,6 +238,11 @@ public class JailMod implements ModInitializer {
             UUID playerUUID = player.getUUID();
             if (jailedPlayers.containsKey(playerUUID)) {
                 JailData jailData = jailedPlayers.get(playerUUID);
+                String currentName = player.getName().getString();
+                if (!currentName.equals(jailData.playerName)) {
+                    jailData.playerName = currentName;
+                    saveJailData();
+                }
                 if (jailData.remainingTicks > 0) {
                     jailPlayer(player, jailData);
                 } else {
@@ -263,26 +274,12 @@ public class JailMod implements ModInitializer {
                                 return 1;
                             }))
                     .then(Commands.literal("set")
-                            .requires(source -> hasAdminPermission(source))
+                            .requires(source -> hasJailSetPermission(source))
+                            .executes(context -> setJailPositionAtCurrentPosition(context))
                             .then(Commands.argument("x", IntegerArgumentType.integer())
                                     .then(Commands.argument("y", IntegerArgumentType.integer())
                                             .then(Commands.argument("z", IntegerArgumentType.integer())
-                                                    .executes(context -> {
-                                                        int x = IntegerArgumentType.getInteger(context, "x");
-                                                        int y = IntegerArgumentType.getInteger(context, "y");
-                                                        int z = IntegerArgumentType.getInteger(context, "z");
-
-                                                        config.jail_position = new Config.Position(x, y, z);
-                                                        if (worldConfigFile != null) {
-                                                            worldConfig = copyConfig(config);
-                                                        }
-                                                        saveConfig();
-
-                                                        context.getSource()
-                                                                .sendSuccess(() -> Component.literal("Jail position set to (" + x
-                                                                        + ", " + y + ", " + z + ")"), true);
-                                                        return 1;
-                                                    })))))
+                                                    .executes(context -> setJailPositionFromCoordinates(context))))))
                     .then(Commands.literal("info")
                             .executes(context -> {
                                 ServerPlayer player = context.getSource().getPlayer();
@@ -302,28 +299,13 @@ public class JailMod implements ModInitializer {
                                     context.getSource().sendSuccess(() -> Component.literal(notInJailMessage), false);
                                     return 0;
                                 }
-                            })));
+                            }))
+                    .then(Commands.literal("list")
+                            .requires(source -> hasAdminPermission(source))
+                            .executes(context -> executeJailList(context.getSource())))
+                    .then(createUnjailCommand()));
 
-            dispatcher.register(Commands.literal("unjail")
-                    .requires(source -> hasAdminPermission(source))
-                    .then(Commands.argument("player", EntityArgument.player())
-                            .suggests(JAILED_PLAYERS_SUGGESTIONS)
-                            .executes(context -> {
-                                ServerPlayer player = EntityArgument.getPlayer(context, "player");
-                                if (player != null) {
-                                    if (!isPlayerInJail(player)) {
-                                        context.getSource().sendFailure(Component.literal("Player "
-                                                + player.getName().getString() + " is not jailed.")
-                                                .withStyle(ChatFormatting.RED));
-                                        return 0;
-                                    }
-                                    unjailPlayer(player, true, context.getSource().getTextName(),
-                                            context.getSource());
-                                } else {
-                                    context.getSource().sendFailure(Component.literal("Player not found!"));
-                                }
-                                return 1;
-                            })));
+            dispatcher.register(createUnjailCommand());
         });
 
         ServerLifecycleEvents.SERVER_STOPPED.register(server -> {
@@ -346,6 +328,109 @@ public class JailMod implements ModInitializer {
                 serverInstance = null;
             }
         });
+    }
+
+    private LiteralArgumentBuilder<CommandSourceStack> createUnjailCommand() {
+        return Commands.literal("unjail")
+                .requires(JailMod::hasAdminPermission)
+                .then(Commands.argument("player", EntityArgument.player())
+                        .suggests(JAILED_PLAYERS_SUGGESTIONS)
+                        .executes(this::executeUnjailCommand));
+    }
+
+    private int executeUnjailCommand(CommandContext<CommandSourceStack> context) throws CommandSyntaxException {
+        ServerPlayer player = EntityArgument.getPlayer(context, "player");
+        if (!isPlayerInJail(player)) {
+            context.getSource().sendFailure(Component.literal("Player " + player.getName().getString()
+                    + " is not jailed.").withStyle(ChatFormatting.RED));
+            return 0;
+        }
+
+        unjailPlayer(player, true, context.getSource().getTextName(), context.getSource());
+        return 1;
+    }
+
+    private int executeJailList(CommandSourceStack source) {
+        if (jailedPlayers.isEmpty()) {
+            source.sendSuccess(() -> Component.literal("No players are currently jailed.")
+                    .withStyle(ChatFormatting.GREEN), false);
+            return 1;
+        }
+
+        MinecraftServer server = source.getServer();
+        List<Map.Entry<UUID, JailData>> entries = new ArrayList<>(jailedPlayers.entrySet());
+        entries.sort(Comparator
+                .comparing((Map.Entry<UUID, JailData> entry) -> getJailedPlayerName(server, entry.getKey(),
+                        entry.getValue()),
+                        String.CASE_INSENSITIVE_ORDER)
+                .thenComparing(entry -> entry.getKey().toString()));
+
+        source.sendSuccess(() -> Component.literal("Jailed players ")
+                .withStyle(ChatFormatting.AQUA).withStyle(ChatFormatting.BOLD)
+                .append(Component.literal("(" + entries.size() + ")").withStyle(ChatFormatting.GRAY)), false);
+
+        for (Map.Entry<UUID, JailData> entry : entries) {
+            JailData jailData = entry.getValue();
+            String playerName = getJailedPlayerName(server, entry.getKey(), jailData);
+            String remainingTime = formatDuration(Math.max(0L, jailData.remainingTicks / 20L));
+            String reason = jailData.reason == null || jailData.reason.isBlank()
+                    ? "Unknown reason"
+                    : jailData.reason;
+            String jailedBy = jailData.jailedBy == null || jailData.jailedBy.isBlank()
+                    ? "Unknown"
+                    : jailData.jailedBy;
+
+            MutableComponent line = Component.literal("• ").withStyle(ChatFormatting.DARK_GRAY)
+                    .append(Component.literal(playerName).withStyle(ChatFormatting.RED))
+                    .append(Component.literal(" — ").withStyle(ChatFormatting.DARK_GRAY))
+                    .append(Component.literal(remainingTime + " left").withStyle(ChatFormatting.YELLOW))
+                    .append(Component.literal(" — Reason: ").withStyle(ChatFormatting.GRAY))
+                    .append(Component.literal(reason).withStyle(ChatFormatting.YELLOW))
+                    .append(Component.literal(" — By: ").withStyle(ChatFormatting.GRAY))
+                    .append(Component.literal(jailedBy).withStyle(ChatFormatting.GOLD));
+            source.sendSuccess(() -> line, false);
+        }
+        return entries.size();
+    }
+
+    private static String getJailedPlayerName(MinecraftServer server, UUID playerUUID, JailData jailData) {
+        ServerPlayer onlinePlayer = server.getPlayerList().getPlayer(playerUUID);
+        if (onlinePlayer != null) {
+            return onlinePlayer.getName().getString();
+        }
+        if (jailData.playerName != null && !jailData.playerName.isBlank()) {
+            return jailData.playerName;
+        }
+        return "Unknown player (" + playerUUID.toString().substring(0, 8) + ")";
+    }
+
+    private int setJailPositionAtCurrentPosition(CommandContext<CommandSourceStack> context) {
+        if (!(context.getSource().getEntity() instanceof ServerPlayer player)) {
+            context.getSource().sendFailure(Component.literal(
+                    "Only a player can use /jail set without coordinates."));
+            return 0;
+        }
+        return saveJailPosition(context, player.blockPosition());
+    }
+
+    private int setJailPositionFromCoordinates(CommandContext<CommandSourceStack> context) {
+        BlockPos position = new BlockPos(
+                IntegerArgumentType.getInteger(context, "x"),
+                IntegerArgumentType.getInteger(context, "y"),
+                IntegerArgumentType.getInteger(context, "z"));
+        return saveJailPosition(context, position);
+    }
+
+    private int saveJailPosition(CommandContext<CommandSourceStack> context, BlockPos position) {
+        config.jail_position = new Config.Position(position.getX(), position.getY(), position.getZ());
+        if (worldConfigFile != null) {
+            worldConfig = copyConfig(config);
+        }
+        saveConfig();
+
+        context.getSource().sendSuccess(() -> Component.literal("Jail position set to (" + position.getX()
+                + ", " + position.getY() + ", " + position.getZ() + ")"), true);
+        return 1;
     }
 
     private int executeImprisonCommand(CommandContext<CommandSourceStack> context, String suppliedReason)
@@ -476,36 +561,51 @@ public class JailMod implements ModInitializer {
 
     private static boolean hasAdminPermission(CommandSourceStack source) {
         if (source.getEntity() instanceof ServerPlayer player) {
-            // Includes singleplayer hosts and dedicated-server operators.
-            if (source.permissions().hasPermission(Permissions.COMMANDS_GAMEMASTER)) {
-                return true;
-            }
-
-            // Very stable OP check: compare player name against the list of OP names
-            // This bypasses mapping issues with hasPermissionLevel or isOperator
-            String playerName = player.getName().getString();
-            for (String opName : source.getServer().getPlayerList().getOpNames()) {
-                if (opName.equalsIgnoreCase(playerName)) {
-                    return true;
-                }
-            }
-
-            // Check for custom admin roles/tags from config
-            String rolesString = config.admin_roles;
-            if (rolesString != null && !rolesString.isEmpty()) {
-                String[] roles = rolesString.split(",");
-                for (String role : roles) {
-                    String trimmedRole = role.trim();
-                    if (!trimmedRole.equalsIgnoreCase("op") && player.entityTags().contains(trimmedRole)) {
-                        return true;
-                    }
-                }
-            }
-            return false;
+            return hasOperatorPermission(source, player) || hasConfiguredAdminRole(player);
         }
 
         // Allow console and non-player sources by default
         return true;
+    }
+
+    private static boolean hasJailSetPermission(CommandSourceStack source) {
+        if (!(source.getEntity() instanceof ServerPlayer player)) {
+            return true;
+        }
+        if (hasOperatorPermission(source, player)) {
+            return true;
+        }
+        return config.allow_admin_role_set_jail_position && hasConfiguredAdminRole(player);
+    }
+
+    private static boolean hasOperatorPermission(CommandSourceStack source, ServerPlayer player) {
+        // Includes singleplayer hosts and dedicated-server operators.
+        if (source.permissions().hasPermission(Permissions.COMMANDS_GAMEMASTER)) {
+            return true;
+        }
+
+        // Keep an explicit operator-list check for mappings where permission levels differ.
+        String playerName = player.getName().getString();
+        for (String opName : source.getServer().getPlayerList().getOpNames()) {
+            if (opName.equalsIgnoreCase(playerName)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static boolean hasConfiguredAdminRole(ServerPlayer player) {
+        String rolesString = config.admin_roles;
+        if (rolesString == null || rolesString.isBlank()) {
+            return false;
+        }
+        for (String role : rolesString.split(",")) {
+            String tag = role.trim();
+            if (!tag.isEmpty() && !tag.equalsIgnoreCase("op") && player.entityTags().contains(tag)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private void registerInteractionListeners() {
@@ -585,6 +685,21 @@ public class JailMod implements ModInitializer {
         return worldConfig != null && worldConfigFile != null;
     }
 
+    public static File getClientDefaultsConfigFile() {
+        return getConfigFileToOpen(CONFIG_FILE, TOML_CONFIG_FILE);
+    }
+
+    public static File getWorldConfigFile() {
+        if (worldConfigFile == null || worldTomlConfigFile == null) {
+            return null;
+        }
+        return getConfigFileToOpen(worldConfigFile, worldTomlConfigFile);
+    }
+
+    private static File getConfigFileToOpen(File jsonFile, File tomlFile) {
+        return tomlFile.exists() ? tomlFile : jsonFile;
+    }
+
     public static void saveClientDefaultsFromScreen(Config updatedConfig) {
         if (updatedConfig == null) {
             return;
@@ -617,6 +732,7 @@ public class JailMod implements ModInitializer {
         long addedTicks = Math.multiplyExact(timeInSeconds, 20L); // Convert seconds to ticks
         JailData existingData = jailedPlayers.get(player.getUUID());
         if (existingData != null) {
+            existingData.playerName = player.getName().getString();
             existingData.remainingTicks = Math.addExact(existingData.remainingTicks, addedTicks);
             existingData.reason = reason;
             existingData.jailedBy = actorName;
@@ -655,6 +771,7 @@ public class JailMod implements ModInitializer {
         // Save player data
         JailData jailData = new JailData();
         jailData.playerUUID = player.getUUID();
+        jailData.playerName = player.getName().getString();
         jailData.originalSpawnPos = originalSpawnPos;
         jailData.originalSpawnDimension = originalSpawnDimension;
         jailData.hadSpawnPoint = hadSpawnPoint;
@@ -1081,7 +1198,6 @@ public class JailMod implements ModInitializer {
         }
         try (FileWriter writer = new FileWriter(dataFile)) {
             GSON.toJson(jailedPlayers.values().toArray(new JailData[0]), writer);
-            System.out.println("Jail status saved: " + dataFile.getAbsolutePath());
         } catch (IOException e) {
             e.printStackTrace();
         }
@@ -1169,6 +1285,9 @@ public class JailMod implements ModInitializer {
                 if (!json.contains("return_to_last_location")) {
                     loadedConfig.return_to_last_location = defaultConfig.return_to_last_location;
                 }
+                if (!json.contains("allow_admin_role_set_jail_position")) {
+                    loadedConfig.allow_admin_role_set_jail_position = defaultConfig.allow_admin_role_set_jail_position;
+                }
                 if (loadedConfig.discord_webhook_url == null) {
                     loadedConfig.discord_webhook_url = defaultConfig.discord_webhook_url;
                 }
@@ -1203,6 +1322,7 @@ public class JailMod implements ModInitializer {
         }
         copy._config_guide = source._config_guide;
         copy.admin_roles = source.admin_roles;
+        copy.allow_admin_role_set_jail_position = source.allow_admin_role_set_jail_position;
         copy.use_previous_position = source.use_previous_position;
         copy.return_to_last_location = source.return_to_last_location;
         copy.jail_position = copyPosition(source.jail_position);
@@ -1436,6 +1556,8 @@ public class JailMod implements ModInitializer {
                         ? rawValue
                         : parseTomlString(rawValue);
                 case "admin_roles" -> loadedConfig.admin_roles = parseTomlString(rawValue);
+                case "allow_admin_role_set_jail_position" -> loadedConfig.allow_admin_role_set_jail_position =
+                        parseTomlBoolean(rawValue, loadedConfig.allow_admin_role_set_jail_position);
                 case "use_previous_position" -> loadedConfig.use_previous_position = parseTomlBoolean(rawValue,
                         loadedConfig.use_previous_position);
                 case "return_to_last_location" -> loadedConfig.return_to_last_location = parseTomlBoolean(rawValue,
@@ -1565,6 +1687,8 @@ public class JailMod implements ModInitializer {
         try (FileWriter writer = new FileWriter(tomlFile)) {
             writer.write("_config_guide = \"" + escapeTomlString(configToSave._config_guide) + "\"\n");
             writer.write("admin_roles = \"" + escapeTomlString(configToSave.admin_roles) + "\"\n");
+            writer.write("allow_admin_role_set_jail_position = "
+                    + configToSave.allow_admin_role_set_jail_position + "\n");
             writer.write("use_previous_position = " + configToSave.use_previous_position + "\n");
             writer.write("return_to_last_location = " + configToSave.return_to_last_location + "\n\n");
             writer.write("discord_webhook_url = \"" + escapeTomlString(configToSave.discord_webhook_url) + "\"\n\n");

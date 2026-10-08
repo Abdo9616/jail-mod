@@ -29,11 +29,11 @@ How to use:
 -----------
 
 1.  Build a prison (a closed structure).
-2.  Set the coordinates where you want the prisoner to spawn with the command `/jail set x y z`  (example `/jail set 0 60 0`)
+2.  Set the coordinates where you want the prisoner to spawn with `/jail set x y z` (example `/jail set 0 60 0`). You can also run `/jail set` while standing at the desired block.
     
 3.  Reload the configuration using `/jail reload` .
 4.  Send someone to jail with a duration and optional reason, for example `/jail imprison playerexample 2m Griefing`.
-5.  If you don't want to wait for the sentence to end, release the player early with `/unjail playerexample`.
+5.  If you don't want to wait for the sentence to end, release the player early with `/jail unjail playerexample`. The top-level `/unjail playerexample` command remains as an alias.
 
 
 Requirements
@@ -64,12 +64,13 @@ Available Commands
 *   **Duration units**: `s`, `m`, `h`, `d`, `w`/`wk`, `mo`/`mth`, `y`/`yr`, plus plural `wks`/`yrs` and the full names `second(s)`, `minute(s)`, `hour(s)`, `day(s)`, `week(s)`, `month(s)`, and `year(s)`. A unit can be attached directly to the number, such as `10seconds`; a bare number means seconds. Unknown suffixes also fall back to seconds. Months are 30 days and years are 365 days.
 *   **Examples**: `/jail imprison Steve 300 Griefing`, `/jail imprison Steve 5m`, and `/jail imprison Steve 2years Breaking blocks`. The second example uses the default reason.
 
-### 2. `/unjail player`
+### 2. `/jail unjail player`
 
 *   **Description**: Manually releases a player from jail before the time expires.
 *   **Who can use it**: Only admins or server operators.
-*   **Syntax**: `/unjail player_name`
-*   **Example**: /unjail Steve  
+*   **Syntax**: `/jail unjail player_name`
+*   **Alias**: `/unjail player_name`
+*   **Example**: `/jail unjail Steve`
     This command will manually release `Steve` from jail.
 
 ### 3. `/jail info`
@@ -78,19 +79,24 @@ Available Commands
 *   **Who can use it**: Only jailed players.
 *   **Example**: `/jail info`This command shows the remaining time using only nonzero units, plus who jailed the player and the reason. For example: "You are jailed for 10 minutes by Alex. Reason: Griefing."
 
-### 4. `/jail reload`
+### 4. `/jail list`
+
+*   **Description**: Lists everyone currently jailed, with their remaining sentence, reason, and the staff member who jailed them. Offline jailed players are included.
+*   **Who can use it**: Only admins or server operators.
+*   **Example**: `/jail list`
+
+### 5. `/jail reload`
 
 *   **Description**: Reloads configuration, language messages, and `discord-messages.json` without restarting the server.
 *   **Who can use it**: Only admins or server operators.
 *   **Example**: `/jail reload`This command reloads the mod's configuration, useful if the config files have been modified.
 
-### 5. `/jail set`
+### 6. `/jail set`
 
-* **Description**: Sets the coordinates where jailed players will spawn. This is where players will appear when they are sent to jail.
-* **Who can use it**: Only admins or server operators.
-* **Syntax**: `/jail set x y z`
-* **Example**: `/jail set 0 60 0`  
-  This command sets the jail spawn location to coordinates (0, 60, 0).
+* **Description**: Sets where jailed players will spawn. With no coordinates, it uses the executing player's current block position.
+* **Who can use it**: Server operators can always use it. Configured admin-role tags can use it when `allow_admin_role_set_jail_position` is enabled.
+* **Syntax**: `/jail set` or `/jail set x y z`
+* **Examples**: `/jail set` uses your current block position; `/jail set 0 60 0` sets the jail position to (0, 60, 0). Console users must provide coordinates.
 
 Interactions blocked during jail
 --------------------------------
@@ -121,7 +127,8 @@ Per-world settings are saved inside the world folder at `serverconfig/jailmod/co
 
 The settings include:
 
-*   **`admin_roles`**: Comma-separated list of roles or tags that grant /jail access. e.g. "op,admin,moderator"
+*   **`admin_roles`**: Comma-separated list of tags that grant admin command access, e.g. `admin,moderator`. `op` represents server operators.
+*   **`allow_admin_role_set_jail_position`**: Defaults to `false`. When enabled, players with a configured admin-role tag can use `/jail set`; operators can always use it.
 *   **`use_previous_position`**: If set to `true`, players will be released in the position they were in before being jailed. If set to `false`, they will be released in a specific position.
 *  **`return_to_last_location`**: If true, released players will be teleported back to the exact spot where they were jailed.
 *   **`release_position`**: The fallback coordinates for releasing players if no other location (spawn/last) is used, active if `use_previous_position` is set to `false` or if `return_to_last_location` is set to `false`.
@@ -134,6 +141,7 @@ The settings include:
 {
   "_config_guide": "JailMod Configuration Guide: \n- admin_roles: Comma-separated list of roles or tags that grant /jail access. Use \u0027op\u0027 to include server operators.\n- use_previous_position: If true, released players will be teleported to their original spawn point (if return_to_last_location is false or unavailable).\n- return_to_last_location: If true, released players will be teleported back to the exact spot where they were jailed.\n- jail_position: The coordinates where players are held while in jail.\n- release_position: The fallback coordinates for releasing players if no other location (spawn/last) is used.",
   "admin_roles": "op",
+  "allow_admin_role_set_jail_position": false,
   "use_previous_position": true,
   "return_to_last_location": true,
   "discord_webhook_url": "",

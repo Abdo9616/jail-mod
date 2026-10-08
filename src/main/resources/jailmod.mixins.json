@@ -9,6 +9,10 @@
     "ServerPlayNetworkHandlerMixin",
     "ServerPlayerEntityMixin"
   ],
+  "client": [
+    "ClothConfigScreenMixin",
+    "ScreenAccessor"
+  ],
   "injectors": {
     "defaultRequire": 1
   }
