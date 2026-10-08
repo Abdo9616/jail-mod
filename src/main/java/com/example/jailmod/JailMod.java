@@ -91,10 +91,10 @@ public class JailMod implements ModInitializer {
             return builder.buildFuture();
         }
 
-        for (UUID uuid : jailedPlayers.keySet()) {
-            ServerPlayer player = server.getPlayerList().getPlayer(uuid);
-            if (player != null) {
-                builder.suggest(player.getName().getString());
+        for (Map.Entry<UUID, JailData> entry : jailedPlayers.entrySet()) {
+            JailData jailData = entry.getValue();
+            if (jailData != null && !jailData.pendingRelease) {
+                builder.suggest(getJailedPlayerName(server, entry.getKey(), jailData));
             }
         }
         return builder.buildFuture();
@@ -155,6 +155,7 @@ public class JailMod implements ModInitializer {
         public boolean hadSpawnPoint;
         public String reason;
         public String jailedBy;
+        public boolean pendingRelease;
         public long remainingTicks; // Remaining time in ticks (1 second = 20 ticks)
 
         // Last location data
@@ -218,7 +219,7 @@ public class JailMod implements ModInitializer {
                 UUID playerUUID = entry.getKey();
                 JailData jailData = entry.getValue();
                 ServerPlayer player = server.getPlayerList().getPlayer(playerUUID);
-                if (player != null) {
+                if (!jailData.pendingRelease && player != null) {
                     jailData.remainingTicks--;
                     applyFrozenStats(player, jailData);
                     if (jailData.remainingTicks <= 0) {
@@ -238,6 +239,11 @@ public class JailMod implements ModInitializer {
             UUID playerUUID = player.getUUID();
             if (jailedPlayers.containsKey(playerUUID)) {
                 JailData jailData = jailedPlayers.get(playerUUID);
+                if (jailData.pendingRelease) {
+                    jailData.playerName = player.getName().getString();
+                    completePendingRelease(player, jailData);
+                    return;
+                }
                 String currentName = player.getName().getString();
                 if (!currentName.equals(jailData.playerName)) {
                     jailData.playerName = currentName;
@@ -333,32 +339,116 @@ public class JailMod implements ModInitializer {
     private LiteralArgumentBuilder<CommandSourceStack> createUnjailCommand() {
         return Commands.literal("unjail")
                 .requires(JailMod::hasAdminPermission)
-                .then(Commands.argument("player", EntityArgument.player())
+                .then(Commands.argument("player", StringArgumentType.word())
                         .suggests(JAILED_PLAYERS_SUGGESTIONS)
                         .executes(this::executeUnjailCommand));
     }
 
-    private int executeUnjailCommand(CommandContext<CommandSourceStack> context) throws CommandSyntaxException {
-        ServerPlayer player = EntityArgument.getPlayer(context, "player");
-        if (!isPlayerInJail(player)) {
-            context.getSource().sendFailure(Component.literal("Player " + player.getName().getString()
-                    + " is not jailed.").withStyle(ChatFormatting.RED));
+    private int executeUnjailCommand(CommandContext<CommandSourceStack> context) {
+        CommandSourceStack source = context.getSource();
+        MinecraftServer server = source.getServer();
+        String target = StringArgumentType.getString(context, "player");
+        UUID playerUUID = findJailedPlayer(server, target);
+        JailData jailData = playerUUID == null ? null : jailedPlayers.get(playerUUID);
+        if (jailData == null) {
+            source.sendFailure(Component.literal("Player " + target + " is not jailed.")
+                    .withStyle(ChatFormatting.RED));
             return 0;
         }
 
-        unjailPlayer(player, true, context.getSource().getTextName(), context.getSource());
+        if (jailData.pendingRelease) {
+            source.sendFailure(Component.literal(getJailedPlayerName(server, playerUUID, jailData)
+                    + " is already scheduled for release when they next join.").withStyle(ChatFormatting.RED));
+            return 0;
+        }
+
+        String actorName = source.getTextName();
+        ServerPlayer player = server.getPlayerList().getPlayer(playerUUID);
+        if (player != null) {
+            unjailPlayer(player, true, actorName, source);
+        } else {
+            queueOfflineUnjail(source, playerUUID, jailData, actorName);
+        }
         return 1;
     }
 
+    private static UUID findJailedPlayer(MinecraftServer server, String target) {
+        try {
+            UUID requestedUUID = UUID.fromString(target);
+            JailData jailData = jailedPlayers.get(requestedUUID);
+            if (jailData != null && !jailData.pendingRelease) {
+                return requestedUUID;
+            }
+            return null;
+        } catch (IllegalArgumentException ignored) {
+            // The target is a player name; resolve it against saved jail records below.
+        }
+
+        ServerPlayer onlinePlayer = server.getPlayerList().getPlayerByName(target);
+        if (onlinePlayer != null && isPlayerInJail(onlinePlayer)) {
+            return onlinePlayer.getUUID();
+        }
+
+        for (Map.Entry<UUID, JailData> entry : jailedPlayers.entrySet()) {
+            JailData jailData = entry.getValue();
+            if (jailData != null && !jailData.pendingRelease
+                    && getJailedPlayerName(server, entry.getKey(), jailData).equalsIgnoreCase(target)) {
+                return entry.getKey();
+            }
+        }
+
+        var cachedProfile = server.services().nameToIdCache().get(target);
+        if (cachedProfile.isPresent()) {
+            UUID cachedUUID = cachedProfile.get().id();
+            JailData jailData = jailedPlayers.get(cachedUUID);
+            if (jailData != null && !jailData.pendingRelease) {
+                return cachedUUID;
+            }
+        }
+        return null;
+    }
+
+    private void queueOfflineUnjail(CommandSourceStack source, UUID playerUUID, JailData jailData,
+            String actorName) {
+        MinecraftServer server = source.getServer();
+        String playerName = getJailedPlayerName(server, playerUUID, jailData);
+        jailData.playerName = playerName;
+        jailData.pendingRelease = true;
+        saveJailData();
+
+        source.sendSuccess(
+                () -> styledTemplate("Player {player} will be released when they next join.",
+                        Map.of("player", playerName), Map.of("player", ChatFormatting.RED)),
+                false);
+
+        Component announcement = styledTemplate(languageStrings.get("unjail_broadcast_manual"),
+                Map.of("player", playerName), Map.of("player", ChatFormatting.RED));
+        ServerPlayer actor = source.getEntity() instanceof ServerPlayer commandPlayer ? commandPlayer : null;
+        broadcastToOtherPlayers(announcement, null, actor);
+        discordNotifier.sendUnjailMessage(config, playerName, jailData.reason, actorName, true);
+    }
+
+    private void completePendingRelease(ServerPlayer player, JailData jailData) {
+        teleportAndRestorePlayer(player, jailData);
+        jailedPlayers.remove(player.getUUID());
+        player.sendSystemMessage(Component.literal(languageStrings.get("unjail_player_manual")), false);
+        saveJailData();
+    }
+
     private int executeJailList(CommandSourceStack source) {
-        if (jailedPlayers.isEmpty()) {
+        MinecraftServer server = source.getServer();
+        List<Map.Entry<UUID, JailData>> entries = new ArrayList<>();
+        for (Map.Entry<UUID, JailData> entry : jailedPlayers.entrySet()) {
+            if (entry.getValue() != null && !entry.getValue().pendingRelease) {
+                entries.add(entry);
+            }
+        }
+        if (entries.isEmpty()) {
             source.sendSuccess(() -> Component.literal("No players are currently jailed.")
                     .withStyle(ChatFormatting.GREEN), false);
             return 1;
         }
 
-        MinecraftServer server = source.getServer();
-        List<Map.Entry<UUID, JailData>> entries = new ArrayList<>(jailedPlayers.entrySet());
         entries.sort(Comparator
                 .comparing((Map.Entry<UUID, JailData> entry) -> getJailedPlayerName(server, entry.getKey(),
                         entry.getValue()),
@@ -400,6 +490,10 @@ public class JailMod implements ModInitializer {
         }
         if (jailData.playerName != null && !jailData.playerName.isBlank()) {
             return jailData.playerName;
+        }
+        var cachedProfile = server.services().nameToIdCache().get(playerUUID);
+        if (cachedProfile.isPresent()) {
+            return cachedProfile.get().name();
         }
         return "Unknown player (" + playerUUID.toString().substring(0, 8) + ")";
     }
@@ -666,7 +760,11 @@ public class JailMod implements ModInitializer {
     }
 
     public static boolean isPlayerInJail(ServerPlayer player) {
-        return player != null && jailedPlayers.containsKey(player.getUUID());
+        if (player == null) {
+            return false;
+        }
+        JailData jailData = jailedPlayers.get(player.getUUID());
+        return jailData != null && !jailData.pendingRelease;
     }
 
     public static Config getConfig() {
@@ -731,6 +829,11 @@ public class JailMod implements ModInitializer {
                 : null;
         long addedTicks = Math.multiplyExact(timeInSeconds, 20L); // Convert seconds to ticks
         JailData existingData = jailedPlayers.get(player.getUUID());
+        if (existingData != null && existingData.pendingRelease) {
+            teleportAndRestorePlayer(player, existingData);
+            jailedPlayers.remove(player.getUUID());
+            existingData = null;
+        }
         if (existingData != null) {
             existingData.playerName = player.getName().getString();
             existingData.remainingTicks = Math.addExact(existingData.remainingTicks, addedTicks);
@@ -865,54 +968,11 @@ public class JailMod implements ModInitializer {
 
     private void unjailPlayer(ServerPlayer player, boolean isManual, String actorName,
             CommandSourceStack commandSource) {
-        JailData jailData = jailedPlayers.remove(player.getUUID());
+        JailData jailData = jailedPlayers.get(player.getUUID());
 
         if (jailData != null) {
-            // TODO: Restore spawn point logic
-            /*
-             * if (jailData.hadSpawnPoint && jailData.originalSpawnPos != null) {
-             * player.setSpawnPoint(new ServerPlayer.Respawn(new
-             * SpawnPoint(jailData.originalSpawnDimension, jailData.originalSpawnPos, 0.0f,
-             * true), true), false);
-             * } else {
-             * player.setSpawnPoint(null, false);
-             * }
-             */
-
-            ServerLevel world = (ServerLevel) player.level();
-
-            // Teleport the player out of jail (release position)
-            if (config.return_to_last_location && jailData.lastDimension != null) {
-                ServerLevel targetWorld = null;
-                Identifier lastDimensionId = Identifier.tryParse(jailData.lastDimension);
-                if (lastDimensionId != null) {
-                    // TODO(JM-261): Re-verify DIMENSION registry mapping on future Mojang mapping updates.
-                    targetWorld = serverInstance.getLevel(ResourceKey.create(Registries.DIMENSION, lastDimensionId));
-                }
-                if (targetWorld == null) {
-                    targetWorld = world;
-                }
-                player.teleportTo(targetWorld, jailData.lastX, jailData.lastY, jailData.lastZ,
-                        EnumSet.noneOf(Relative.class), jailData.lastYaw, jailData.lastPitch, false);
-            } else if (config.use_previous_position && jailData.hadSpawnPoint) {
-                ServerLevel spawnWorld = world;
-                if (jailData.originalSpawnDimension != null) {
-                    ServerLevel configuredSpawnWorld = serverInstance.getLevel(jailData.originalSpawnDimension);
-                    if (configuredSpawnWorld != null) {
-                        spawnWorld = configuredSpawnWorld;
-                    }
-                }
-                player.teleportTo(spawnWorld, jailData.originalSpawnPos.getX(), jailData.originalSpawnPos.getY(),
-                        jailData.originalSpawnPos.getZ(), EnumSet.noneOf(Relative.class), player.getYRot(),
-                        player.getXRot(), false);
-            } else {
-                BlockPos releasePos = new BlockPos(config.release_position.x, config.release_position.y,
-                        config.release_position.z);
-                player.teleportTo(world, releasePos.getX() + 0.5, releasePos.getY(), releasePos.getZ() + 0.5,
-                        EnumSet.noneOf(Relative.class), player.getYRot(), player.getXRot(), false);
-            }
-
-            restoreStatsAfterJail(player, jailData);
+            teleportAndRestorePlayer(player, jailData);
+            jailedPlayers.remove(player.getUUID());
             ServerPlayer actor = commandSource != null && commandSource.getEntity() instanceof ServerPlayer commandPlayer
                     ? commandPlayer
                     : null;
@@ -943,6 +1003,41 @@ public class JailMod implements ModInitializer {
 
             saveJailData();
         }
+    }
+
+    private void teleportAndRestorePlayer(ServerPlayer player, JailData jailData) {
+        ServerLevel world = (ServerLevel) player.level();
+
+        if (config.return_to_last_location && jailData.lastDimension != null) {
+            ServerLevel targetWorld = null;
+            Identifier lastDimensionId = Identifier.tryParse(jailData.lastDimension);
+            if (lastDimensionId != null) {
+                targetWorld = serverInstance.getLevel(ResourceKey.create(Registries.DIMENSION, lastDimensionId));
+            }
+            if (targetWorld == null) {
+                targetWorld = world;
+            }
+            player.teleportTo(targetWorld, jailData.lastX, jailData.lastY, jailData.lastZ,
+                    EnumSet.noneOf(Relative.class), jailData.lastYaw, jailData.lastPitch, false);
+        } else if (config.use_previous_position && jailData.hadSpawnPoint && jailData.originalSpawnPos != null) {
+            ServerLevel spawnWorld = world;
+            if (jailData.originalSpawnDimension != null) {
+                ServerLevel configuredSpawnWorld = serverInstance.getLevel(jailData.originalSpawnDimension);
+                if (configuredSpawnWorld != null) {
+                    spawnWorld = configuredSpawnWorld;
+                }
+            }
+            player.teleportTo(spawnWorld, jailData.originalSpawnPos.getX(), jailData.originalSpawnPos.getY(),
+                    jailData.originalSpawnPos.getZ(), EnumSet.noneOf(Relative.class), player.getYRot(),
+                    player.getXRot(), false);
+        } else {
+            BlockPos releasePos = new BlockPos(config.release_position.x, config.release_position.y,
+                    config.release_position.z);
+            player.teleportTo(world, releasePos.getX() + 0.5, releasePos.getY(), releasePos.getZ() + 0.5,
+                    EnumSet.noneOf(Relative.class), player.getYRot(), player.getXRot(), false);
+        }
+
+        restoreStatsAfterJail(player, jailData);
     }
 
     private void captureStatSnapshot(ServerPlayer player, JailData jailData) {

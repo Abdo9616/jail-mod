@@ -116,10 +116,10 @@ public final class JailModClothConfigScreen {
                 "Shows your remaining sentence and reason if you are jailed.");
         addCommandItem(category, entries, "/jail list",
                 "Lists jailed players with their remaining time, reason, and the staff member who jailed them. Requires jail staff permission.");
-        addCommandItem(category, entries, "/jail unjail <player>",
-                "Releases a jailed player. Requires jail staff permission.");
-        addCommandItem(category, entries, "/unjail <player>",
-                "Alias for /jail unjail <player>.");
+        addCommandItem(category, entries, "/jail unjail <player name|UUID>",
+                "Releases an online or offline jailed player by name or UUID. Offline players are released when they next join. Requires jail staff permission.");
+        addCommandItem(category, entries, "/unjail <player name|UUID>",
+                "Alias for /jail unjail; also accepts offline players by name or UUID.");
 
         addHelpText(category, entries, Component.literal("Configuration and locations")
                 .withStyle(ChatFormatting.AQUA).withStyle(ChatFormatting.BOLD));

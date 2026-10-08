@@ -66,12 +66,12 @@ Available Commands
 
 ### 2. `/jail unjail player`
 
-*   **Description**: Manually releases a player from jail before the time expires.
+*   **Description**: Manually releases a player from jail before the time expires. The target may be online or offline.
 *   **Who can use it**: Only admins or server operators.
-*   **Syntax**: `/jail unjail player_name`
-*   **Alias**: `/unjail player_name`
-*   **Example**: `/jail unjail Steve`
-    This command will manually release `Steve` from jail.
+*   **Syntax**: `/jail unjail <player_name|uuid>`
+*   **Alias**: `/unjail <player_name|uuid>`
+*   **Examples**: `/jail unjail Steve` or `/jail unjail 069a79f4-44e9-4726-a5be-fca90e38aaf5`
+    An offline player is removed from the jail list immediately and has their saved state restored when they next join.
 
 ### 3. `/jail info`
 
