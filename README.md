@@ -19,7 +19,7 @@ Key Features
 *   **Automatic or Manual Release**: The player is automatically released after the set time, or an admin can release them manually.
 *   **Imprisonment Reason**: Add a reason to the command when needed. If omitted, the reason is `Unknown reason`.
 *   **Command to know the remaining time**: Imprisoned players can check the time remaining until their release.
-*   **Discord Webhook (optional)**: Sends jail and unjail events to a Discord webhook. BanHammer webhook reuse is server-side only and disabled by default.
+*   **Discord Webhook (optional)**: Sends jail and unjail events to a Discord webhook. BanHammer webhook reuse defaults to enabled on dedicated servers and disabled in client/singleplayer defaults.
 *   **BanHammer-style Discord templates**: Supports `config/jailmod/discord-messages.json` in BanHammer-like format with auto patching for new fields.
 *   **Singleplayer support**: Jail commands and restrictions work on the integrated server; the singleplayer host is recognized as an administrator when commands are enabled.
 *   **Mod Menu settings**: Edit client defaults and per-world overrides for admin roles, jail and release positions, and Discord options when Mod Menu and Cloth Config are installed.
@@ -134,9 +134,13 @@ The settings include:
 *   **`release_position`**: The fallback coordinates for releasing players if no other location (spawn/last) is used, active if `use_previous_position` is set to `false` or if `return_to_last_location` is set to `false`.
 *   **`jail_position`**: The coordinates where players are held while in jail with coordinates `x`, `y`, `z`.
 *   **`discord_webhook_url`**: Optional Discord webhook used for jail/un-jail embeds. Leave empty to use BanHammer's webhook when enabled in the world's settings.
-*   **`use_banhammer_webhook`**: If `true` and `discord_webhook_url` is empty, JailMod may reuse the server-side BanHammer webhook. It is off by default and is not exposed in the Mod Menu screen.
+*   **`use_banhammer_webhook`**: If `true` and `discord_webhook_url` is empty, JailMod may reuse the server-side BanHammer webhook. It defaults to `true` on dedicated servers and `false` in client/singleplayer defaults. It is not exposed in the Mod Menu screen.
 
 #### Example configuration:
+
+This example is for a dedicated server. Client/singleplayer defaults use `false` for `use_banhammer_webhook`.
+
+Server-side configuration file `config/jailmod/config.json`:
 ```
 {
   "_config_guide": "JailMod Configuration Guide: \n- admin_roles: Comma-separated list of roles or tags that grant /jail access. Use \u0027op\u0027 to include server operators.\n- use_previous_position: If true, released players will be teleported to their original spawn point (if return_to_last_location is false or unavailable).\n- return_to_last_location: If true, released players will be teleported back to the exact spot where they were jailed.\n- jail_position: The coordinates where players are held while in jail.\n- release_position: The fallback coordinates for releasing players if no other location (spawn/last) is used.",
@@ -145,7 +149,7 @@ The settings include:
   "use_previous_position": true,
   "return_to_last_location": true,
   "discord_webhook_url": "",
-  "use_banhammer_webhook": false,
+  "use_banhammer_webhook": true,
   "release_position": {
     "x": 100,
     "y": 65,

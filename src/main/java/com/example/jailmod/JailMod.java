@@ -131,7 +131,7 @@ public class JailMod implements ModInitializer {
         public String discord_webhook_url = "";
         // Keep config key as use_banhammer_webhook while also accepting old sendJailMessage.
         @SerializedName(value = "use_banhammer_webhook", alternate = { "sendJailMessage" })
-        public boolean useBanhammerWebhook = false;
+        public boolean useBanhammerWebhook = !isClientEnvironment();
 
         public static class Position {
             public int x;
