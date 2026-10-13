@@ -378,7 +378,7 @@ public class DiscordNotifier {
 
         static MessageTemplate defaultManualUnjailMessage() {
             MessageTemplate t = new MessageTemplate();
-            t.embedColor = "red";
+            t.embedColor = "green";
             t.embedMessage = List.of(
                     "${banned} has been unjailed!",
                     "",
